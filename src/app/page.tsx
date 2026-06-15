@@ -11,15 +11,15 @@ import Link from "next/link";
 
 export default function UploadPage() {
   const router = useRouter();
-  const { projects, startProcessing } = useClipContext();
+  const { projects, uploadVideo, uploadUrl } = useClipContext();
 
-  const handleFile = (file: File) => {
-    const id = startProcessing(file.name, file.name);
+  const handleFile = async (file: File) => {
+    const id = await uploadVideo(file);
     router.push(`/processing/${id}`);
   };
 
-  const handleUrl = (url: string) => {
-    const id = startProcessing("Imported Video", url);
+  const handleUrl = async (url: string) => {
+    const id = await uploadUrl(url);
     router.push(`/processing/${id}`);
   };
 

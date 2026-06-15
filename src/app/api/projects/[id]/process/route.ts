@@ -1,0 +1,89 @@
+import { NextResponse } from "next/server";
+import { v4 as uuid } from "uuid";
+import fs from "fs";
+import { getProject, updateProject, createClip } from "@/lib/db";
+import { transcriptPath } from "@/lib/storage";
+import { getVideoDuration } from "@/lib/ffmpeg";
+import { detectHighlights, checkOmlxHealth } from "@/lib/llm";
+
+export async function POST(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const project = getProject(id);
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+
+  const filePath = project.file_path as string | null;
+
+  // Step 1: Get video duration
+  let duration = project.duration as number;
+  if (filePath && duration === 0) {
+    try {
+      duration = await getVideoDuration(filePath);
+      updateProject(id, { duration, processing_step: "transcribing", processing_progress: 20 });
+    } catch (e) {
+      return NextResponse.json({ error: "Failed to read video file. Is ffmpeg installed?" }, { status: 500 });
+    }
+  }
+
+  // Step 2: Check for transcript
+  let transcript = project.transcript as string | null;
+
+  if (!transcript) {
+    const tPath = transcriptPath(id);
+    if (fs.existsSync(tPath)) {
+      transcript = fs.readFileSync(tPath, "utf-8");
+      updateProject(id, { transcript });
+    }
+  }
+
+  if (!transcript) {
+    updateProject(id, { processing_step: "transcribing", processing_progress: 25 });
+    return NextResponse.json({
+      error: "No transcript available. Upload a transcript file or paste the text at /api/projects/{id}/transcript",
+      needs_transcript: true,
+    }, { status: 422 });
+  }
+
+  // Step 3: Detect highlights via oMLX
+  updateProject(id, { processing_step: "analyzing", processing_progress: 50 });
+
+  const omlxUp = await checkOmlxHealth();
+  if (!omlxUp) {
+    return NextResponse.json({
+      error: "oMLX server not reachable. Start oMLX and ensure it's running at " + (process.env.OMLX_URL || "http://localhost:8000"),
+      needs_omlx: true,
+    }, { status: 503 });
+  }
+
+  let highlights;
+  try {
+    highlights = await detectHighlights(transcript, duration || 3600);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: `LLM analysis failed: ${message}` }, { status: 500 });
+  }
+
+  updateProject(id, { processing_step: "generating", processing_progress: 75 });
+
+  // Step 4: Create clip records
+  for (const h of highlights) {
+    createClip({
+      id: uuid(),
+      project_id: id,
+      title: h.title,
+      description: h.description,
+      start_time: h.start_time,
+      end_time: h.end_time,
+      duration: h.end_time - h.start_time,
+      score: h.score,
+    });
+  }
+
+  updateProject(id, { processing_step: "complete", processing_progress: 100 });
+
+  return NextResponse.json({ success: true, clips_created: highlights.length });
+}

@@ -4,13 +4,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useState,
   type ReactNode,
 } from "react";
 import type {
   Clip,
   Project,
-  ProcessingStep,
   SocialAccount,
 } from "@/lib/types";
 import {
@@ -25,7 +25,10 @@ interface ClipContextType {
   socialAccounts: SocialAccount[];
   activeProject: Project | null;
   setActiveProject: (project: Project | null) => void;
-  startProcessing: (title: string, source: string) => string;
+  uploadVideo: (file: File) => Promise<string>;
+  uploadUrl: (url: string) => Promise<string>;
+  refreshProjects: () => Promise<void>;
+  refreshClips: () => Promise<void>;
   getClip: (id: string) => Clip | undefined;
   getProject: (id: string) => Project | undefined;
   updateClip: (id: string, updates: Partial<Clip>) => void;
@@ -41,56 +44,52 @@ export function ClipProvider({ children }: { children: ReactNode }) {
     useState<SocialAccount[]>(mockSocialAccounts);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
 
-  const startProcessing = useCallback(
-    (title: string, source: string): string => {
-      const id = `proj-${Date.now()}`;
-      const steps: ProcessingStep[] = [
-        "uploading",
-        "transcribing",
-        "analyzing",
-        "generating",
-        "complete",
-      ];
+  const refreshProjects = useCallback(async () => {
+    try {
+      const res = await fetch("/api/projects");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.length > 0) setProjects(data);
+      }
+    } catch {
+      // keep mock data on failure
+    }
+  }, []);
 
-      const newProject: Project = {
-        id,
-        title,
-        sourceUrl: source.startsWith("http") ? source : undefined,
-        fileName: !source.startsWith("http") ? source : undefined,
-        duration: 0,
-        processingStep: "uploading",
-        processingProgress: 0,
-        clips: [],
-        createdAt: new Date().toISOString(),
-      };
+  const refreshClips = useCallback(async () => {
+    try {
+      const res = await fetch("/api/clips");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.length > 0) setClips(data);
+      }
+    } catch {
+      // keep mock data on failure
+    }
+  }, []);
 
-      setProjects((prev) => [newProject, ...prev]);
+  useEffect(() => {
+    refreshProjects();
+    refreshClips();
+  }, [refreshProjects, refreshClips]);
 
-      let stepIndex = 0;
-      const advance = () => {
-        if (stepIndex >= steps.length - 1) return;
-        stepIndex++;
-        setProjects((prev) =>
-          prev.map((p) =>
-            p.id === id
-              ? {
-                  ...p,
-                  processingStep: steps[stepIndex],
-                  processingProgress: (stepIndex / (steps.length - 1)) * 100,
-                }
-              : p
-          )
-        );
-        if (stepIndex < steps.length - 1) {
-          setTimeout(advance, 2000 + Math.random() * 1500);
-        }
-      };
+  const uploadVideo = useCallback(async (file: File): Promise<string> => {
+    const form = new FormData();
+    form.append("video", file);
+    const res = await fetch("/api/upload", { method: "POST", body: form });
+    const { id } = await res.json();
+    await refreshProjects();
+    return id;
+  }, [refreshProjects]);
 
-      setTimeout(advance, 1500);
-      return id;
-    },
-    []
-  );
+  const uploadUrl = useCallback(async (url: string): Promise<string> => {
+    const form = new FormData();
+    form.append("url", url);
+    const res = await fetch("/api/upload", { method: "POST", body: form });
+    const { id } = await res.json();
+    await refreshProjects();
+    return id;
+  }, [refreshProjects]);
 
   const getClip = useCallback(
     (id: string) => clips.find((c) => c.id === id),
@@ -107,6 +106,11 @@ export function ClipProvider({ children }: { children: ReactNode }) {
       setClips((prev) =>
         prev.map((c) => (c.id === id ? { ...c, ...updates } : c))
       );
+      fetch(`/api/clips/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      }).catch(() => {});
     },
     []
   );
@@ -133,7 +137,10 @@ export function ClipProvider({ children }: { children: ReactNode }) {
         socialAccounts,
         activeProject,
         setActiveProject,
-        startProcessing,
+        uploadVideo,
+        uploadUrl,
+        refreshProjects,
+        refreshClips,
         getClip,
         getProject,
         updateClip,
