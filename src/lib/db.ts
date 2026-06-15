@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 
-const DB_DIR = path.join(process.cwd(), "storage");
+const DB_DIR = process.env.STORAGE_ROOT ?? path.join(process.cwd(), "storage");
 const DB_PATH = path.join(DB_DIR, "clipinc.db");
 
 fs.mkdirSync(DB_DIR, { recursive: true });
@@ -10,6 +10,7 @@ fs.mkdirSync(DB_DIR, { recursive: true });
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+db.pragma("busy_timeout = 10000");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS projects (
@@ -62,6 +63,41 @@ db.exec(`
 `);
 
 export default db;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapProject(row: Record<string, any>, clips: ReturnType<typeof mapClip>[] = []) {
+  return {
+    id: row.id as string,
+    title: row.title as string,
+    sourceUrl: row.source_url as string | undefined,
+    fileName: row.file_name as string | undefined,
+    duration: row.duration as number,
+    processingStep: row.processing_step as string,
+    processingProgress: row.processing_progress as number,
+    clips,
+    createdAt: row.created_at as string,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapClip(row: Record<string, any>) {
+  return {
+    id: row.id as string,
+    projectId: row.project_id as string,
+    title: row.title as string,
+    description: row.description as string,
+    startTime: row.start_time as number,
+    endTime: row.end_time as number,
+    duration: row.duration as number,
+    aspectRatio: row.aspect_ratio as string,
+    status: row.status as string,
+    score: row.score as number,
+    captions: [],
+    thumbnail: (row.thumbnail_path ?? "") as string,
+    publishedTo: [],
+    createdAt: row.created_at as string,
+  };
+}
 
 export function getProjects() {
   return db.prepare("SELECT * FROM projects ORDER BY created_at DESC").all();

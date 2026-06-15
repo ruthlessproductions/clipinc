@@ -16,6 +16,7 @@ import {
   Check,
   Link as LinkIcon,
   ExternalLink,
+  AlertCircle,
 } from "lucide-react";
 
 const platformConfig: Record<
@@ -46,6 +47,7 @@ export default function ExportPage({
   );
   const [isExporting, setIsExporting] = useState(false);
   const [exported, setExported] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   if (!clip) {
     return (
@@ -63,12 +65,26 @@ export default function ExportPage({
     );
   };
 
-  const handleExport = () => {
+  const handleExport = async (download: boolean) => {
     setIsExporting(true);
-    setTimeout(() => {
-      setIsExporting(false);
-      setExported(true);
-    }, 2000);
+    setExportError(null);
+    try {
+      const res = await fetch(`/api/clips/${id}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aspect_ratio: aspectRatio }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setExportError(data.error ?? "Export failed");
+      } else {
+        setExported(true);
+        if (download) window.location.href = `/api/clips/${id}/download`;
+      }
+    } catch {
+      setExportError("Failed to connect to export API");
+    }
+    setIsExporting(false);
   };
 
   return (
@@ -172,16 +188,23 @@ export default function ExportPage({
         </div>
       </GlassCard>
 
+      {exportError && (
+        <div className="flex items-center gap-2 rounded-xl bg-amber-500/10 px-4 py-3 text-xs text-amber-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {exportError}
+        </div>
+      )}
+
       <div className="flex gap-3">
-        <Button variant="secondary" size="lg" className="flex-1 gap-2" onClick={handleExport}>
+        <Button variant="secondary" size="lg" className="flex-1 gap-2" disabled={isExporting} onClick={() => handleExport(true)}>
           <Download className="h-4 w-4" />
-          Download
+          {isExporting ? "Exporting…" : "Download"}
         </Button>
         <Button
           size="lg"
           className="flex-1 gap-2"
           disabled={selectedPlatforms.length === 0 || isExporting}
-          onClick={handleExport}
+          onClick={() => handleExport(false)}
         >
           {isExporting ? (
             <>Publishing...</>

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getProject, getClips } from "@/lib/db";
+import { getProject, getClips, mapProject, mapClip } from "@/lib/db";
 
 export async function GET(
   _req: Request,
@@ -10,6 +10,6 @@ export async function GET(
   if (!project) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  const clips = getClips(id);
-  return NextResponse.json({ ...project, clips });
+  const clips = (getClips(id) as Record<string, unknown>[]).map(mapClip);
+  return NextResponse.json(mapProject(project, clips));
 }

@@ -1,5 +1,13 @@
 const OMLX_BASE_URL = process.env.OMLX_URL || "http://localhost:8000";
 const OMLX_MODEL = process.env.OMLX_MODEL || "mlx-community/Llama-3.3-70B-Instruct-4bit";
+const OMLX_API_KEY = process.env.OMLX_API_KEY || "";
+
+// Max chars per chunk (~10 min of dialogue at average speaking pace)
+const CHUNK_CHARS = 12000;
+
+function authHeaders(): HeadersInit {
+  return OMLX_API_KEY ? { Authorization: `Bearer ${OMLX_API_KEY}` } : {};
+}
 
 interface HighlightSegment {
   title: string;
@@ -9,35 +17,104 @@ interface HighlightSegment {
   score: number;
 }
 
-export async function detectHighlights(
-  transcript: string,
+// Convert VTT/SRT/plain transcript to compact "[MM:SS] Speaker: text" lines.
+// Strips cue indices, "-->" timing lines, and blank lines; merges consecutive
+// cues from the same speaker to reduce token count.
+function compressTranscript(raw: string): string {
+  const lines = raw.split("\n");
+  const cues: { seconds: number; speaker: string; text: string }[] = [];
+
+  let i = 0;
+  if (lines[0]?.trim() === "WEBVTT") i = 1;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    // Timestamp line: "00:00:02.280 --> 00:00:03.470" or "00:02.280 --> 00:03.470"
+    if (line.includes("-->")) {
+      const start = line.split("-->")[0].trim();
+      const seconds = parseTimestamp(start);
+      i++;
+      const textLines: string[] = [];
+      while (i < lines.length && lines[i].trim() !== "") {
+        textLines.push(lines[i].trim());
+        i++;
+      }
+      const full = textLines.join(" ");
+      const colonIdx = full.indexOf(":");
+      const speaker = colonIdx > 0 && colonIdx < 40 ? full.slice(0, colonIdx).trim() : "";
+      const text = colonIdx > 0 && colonIdx < 40 ? full.slice(colonIdx + 1).trim() : full;
+      if (text) cues.push({ seconds, speaker, text });
+    } else {
+      i++;
+    }
+  }
+
+  // If no VTT cues found, return as-is (plain text transcript)
+  if (cues.length === 0) return raw.trim();
+
+  // Merge consecutive cues from the same speaker
+  const merged: typeof cues = [];
+  for (const cue of cues) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.speaker === cue.speaker && cue.seconds - prev.seconds < 10) {
+      prev.text += " " + cue.text;
+    } else {
+      merged.push({ ...cue });
+    }
+  }
+
+  return merged
+    .map((c) => {
+      const t = Math.round(c.seconds);
+      return c.speaker ? `[${t}s] ${c.speaker}: ${c.text}` : `[${t}s] ${c.text}`;
+    })
+    .join("\n");
+}
+
+function parseTimestamp(ts: string): number {
+  const parts = ts.replace(",", ".").split(":");
+  if (parts.length === 3) {
+    return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2]);
+  }
+  if (parts.length === 2) {
+    return parseInt(parts[0]) * 60 + parseFloat(parts[1]);
+  }
+  return 0;
+}
+
+async function analyzeChunk(
+  chunk: string,
   videoDuration: number
 ): Promise<HighlightSegment[]> {
-  const prompt = `You are a viral content expert. Analyze this podcast transcript and identify the most engaging, shareable moments that would work as short-form clips (15-90 seconds each).
+  const prompt = `You are a viral content expert. Analyze this podcast transcript segment and identify the most engaging, shareable moments that would work as short-form clips (15-90 seconds each).
 
-For each highlight, provide:
-- A catchy title (for the clip)
+Each line is prefixed with [Xs] where X is the exact timestamp in seconds from the start of the video. Use these values directly as start_time and end_time — do not convert or estimate.
+
+For each highlight provide:
+- A catchy title
 - A brief description (1 sentence)
-- Start and end timestamps (in seconds)
+- start_time: the [Xs] value (just the number) where the moment begins
+- end_time: the [Xs] value (just the number) where the moment ends
 - A virality score (0-100)
 
-Focus on: strong opinions, surprising facts, emotional moments, funny exchanges, actionable advice, controversial takes, and compelling stories.
+Focus on: strong opinions, surprising facts, emotional moments, funny exchanges, actionable advice, controversial takes, compelling stories.
 
-The video is ${Math.round(videoDuration)} seconds long.
+The full video is ${Math.round(videoDuration)} seconds long.
 
 Transcript:
-${transcript}
+${chunk}
 
-Respond with ONLY a JSON array of objects with keys: title, description, start_time, end_time, score. No markdown, no explanation.`;
+Respond with ONLY a JSON array with keys: title, description, start_time, end_time, score. No markdown, no explanation.`;
 
   const res = await fetch(`${OMLX_BASE_URL}/v1/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       model: OMLX_MODEL,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.3,
-      max_tokens: 4096,
+      max_tokens: 2048,
     }),
   });
 
@@ -48,30 +125,56 @@ Respond with ONLY a JSON array of objects with keys: title, description, start_t
 
   const data = await res.json();
   const content = data.choices?.[0]?.message?.content ?? "[]";
-
   const jsonMatch = content.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error("Failed to parse highlights from LLM response");
+  if (!jsonMatch) return [];
+
+  return JSON.parse(jsonMatch[0]) as HighlightSegment[];
+}
+
+export async function detectHighlights(
+  transcript: string,
+  videoDuration: number
+): Promise<HighlightSegment[]> {
+  const compressed = compressTranscript(transcript);
+
+  // Split into overlapping chunks so clips near boundaries aren't missed
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < compressed.length) {
+    chunks.push(compressed.slice(offset, offset + CHUNK_CHARS));
+    offset += CHUNK_CHARS - 1000; // 1000-char overlap
   }
 
-  const highlights: HighlightSegment[] = JSON.parse(jsonMatch[0]);
+  const perChunk = await Promise.all(
+    chunks.map((chunk) => analyzeChunk(chunk, videoDuration))
+  );
 
-  return highlights
-    .filter(
-      (h) =>
-        h.start_time >= 0 &&
-        h.end_time <= videoDuration &&
-        h.end_time - h.start_time >= 10 &&
-        h.end_time - h.start_time <= 120
-    )
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10);
+  const all = perChunk.flat().filter(
+    (h) =>
+      h.start_time >= 0 &&
+      h.end_time <= videoDuration &&
+      h.end_time - h.start_time >= 10 &&
+      h.end_time - h.start_time <= 120
+  );
+
+  // Deduplicate by start_time proximity (within 15s = same moment)
+  const deduped: HighlightSegment[] = [];
+  for (const h of all.sort((a, b) => b.score - a.score)) {
+    const isDupe = deduped.some((d) => Math.abs(d.start_time - h.start_time) < 15);
+    if (!isDupe) deduped.push(h);
+  }
+
+  return deduped.slice(0, 10);
 }
 
 export async function checkOmlxHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${OMLX_BASE_URL}/v1/models`, { signal: AbortSignal.timeout(3000) });
-    return res.ok;
+    const res = await fetch(`${OMLX_BASE_URL}/v1/models`, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(3000),
+    });
+    // 401 means the server is up but needs a key — still reachable
+    return res.ok || res.status === 401;
   } catch {
     return false;
   }

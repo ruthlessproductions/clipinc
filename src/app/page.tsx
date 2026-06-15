@@ -74,7 +74,7 @@ export default function UploadPage() {
                       </span>
                       <span className="flex items-center gap-1">
                         <Sparkles className="h-3 w-3" />
-                        {project.clips.length} clips
+                        {project.clips?.length ?? 0} clips
                       </span>
                     </div>
                   </div>

@@ -1,14 +1,12 @@
 "use client";
 
-import { use, useState, useCallback } from "react";
+import { use, useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useClipContext } from "@/context/clip-context";
 import { GlassCard } from "@/components/ui/glass-card";
-import { ProgressBar } from "@/components/ui/progress-bar";
-import { StepIndicator } from "@/components/processing/step-indicator";
 import { TranscriptUpload } from "@/components/upload/transcript-upload";
 import { Button } from "@/components/ui/button";
-import type { ProcessingStep } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import {
   Upload,
   FileText,
@@ -18,55 +16,35 @@ import {
   ArrowRight,
   Play,
   AlertCircle,
+  Check,
+  Loader2,
+  SkipForward,
 } from "lucide-react";
 
-const steps: {
-  key: ProcessingStep;
-  label: string;
-  description: string;
-  icon: typeof Upload;
-}[] = [
-  {
-    key: "uploading",
-    label: "Uploading Video",
-    description: "Transferring your video to local storage",
-    icon: Upload,
-  },
-  {
-    key: "transcribing",
-    label: "Transcript",
-    description: "Upload a transcript or auto-transcribe",
-    icon: FileText,
-  },
-  {
-    key: "analyzing",
-    label: "Analyzing Content",
-    description: "oMLX finds the most engaging moments",
-    icon: Brain,
-  },
-  {
-    key: "generating",
-    label: "Generating Clips",
-    description: "Creating optimized short-form clips",
-    icon: Wand2,
-  },
-  {
-    key: "complete",
-    label: "Complete",
-    description: "Your clips are ready to review",
-    icon: CheckCircle2,
-  },
-];
+type StepView = "uploading" | "transcript" | "analyze" | "running" | "complete";
 
-function getStepStatus(
-  currentStep: ProcessingStep,
-  stepKey: ProcessingStep
-): "pending" | "active" | "complete" {
-  const currentIdx = steps.findIndex((s) => s.key === currentStep);
-  const stepIdx = steps.findIndex((s) => s.key === stepKey);
-  if (stepIdx < currentIdx) return "complete";
-  if (stepIdx === currentIdx)
-    return currentStep === "complete" ? "complete" : "active";
+const TRAIL = [
+  { key: "uploading", label: "Upload", icon: Upload },
+  { key: "transcript", label: "Transcript", icon: FileText },
+  { key: "analyze", label: "Analyze", icon: Brain },
+  { key: "running", label: "Generate", icon: Wand2 },
+  { key: "complete", label: "Done", icon: CheckCircle2 },
+] as const;
+
+const TRAIL_ORDER = TRAIL.map((t) => t.key);
+
+function getView(processingStep: string, transcriptReady: boolean): StepView {
+  if (processingStep === "complete") return "complete";
+  if (processingStep === "generating" || processingStep === "analyzing") return "running";
+  if (processingStep === "transcribing" && !transcriptReady) return "transcript";
+  return "analyze";
+}
+
+function trailStatus(viewKey: string, currentView: StepView): "pending" | "active" | "complete" {
+  const currentIdx = TRAIL_ORDER.indexOf(currentView as typeof TRAIL_ORDER[number]);
+  const keyIdx = TRAIL_ORDER.indexOf(viewKey as typeof TRAIL_ORDER[number]);
+  if (keyIdx < currentIdx) return "complete";
+  if (keyIdx === currentIdx) return "active";
   return "pending";
 }
 
@@ -79,36 +57,39 @@ export default function ProcessingPage({
   const router = useRouter();
   const { getProject, refreshProjects, refreshClips } = useClipContext();
   const project = getProject(id);
-  const [processing, setProcessing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const runProcessing = useCallback(async () => {
-    setProcessing(true);
+  const [transcriptReady, setTranscriptReady] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
+  useEffect(() => stopPolling, [stopPolling]);
+
+  const runAnalysis = useCallback(async () => {
+    setRunning(true);
     setError(null);
+    stopPolling();
+    pollRef.current = setInterval(() => refreshProjects(), 2000);
     try {
-      const res = await fetch(`/api/projects/${id}/process`, {
-        method: "POST",
-      });
+      const res = await fetch(`/api/projects/${id}/process`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error);
-        if (data.needs_transcript) {
-          await refreshProjects();
-        }
+        await refreshProjects();
       } else {
         await refreshProjects();
         await refreshClips();
       }
-    } catch (e) {
+    } catch {
       setError("Failed to connect to the processing API");
     }
-    setProcessing(false);
-  }, [id, refreshProjects, refreshClips]);
-
-  const handleTranscriptUploaded = useCallback(async () => {
-    await refreshProjects();
-    setError(null);
-  }, [refreshProjects]);
+    stopPolling();
+    setRunning(false);
+  }, [id, refreshProjects, refreshClips, stopPolling]);
 
   if (!project) {
     return (
@@ -118,89 +99,136 @@ export default function ProcessingPage({
     );
   }
 
-  const needsTranscript =
-    project.processingStep === "uploading" ||
-    project.processingStep === "transcribing";
+  const view = getView(project.processingStep, transcriptReady);
 
   return (
-    <div className="max-w-2xl mx-auto px-6 py-10 space-y-6">
+    <div className="max-w-xl mx-auto px-6 py-10 space-y-8">
       <div>
         <h1 className="text-2xl font-bold gradient-brand-text">Processing</h1>
-        <p className="mt-1 text-sm text-surface-500 truncate">
-          {project.title}
-        </p>
+        <p className="mt-1 text-sm text-surface-500 truncate">{project.title}</p>
       </div>
 
-      <GlassCard className="space-y-6">
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-surface-600">Overall Progress</span>
-            <span className="text-brand-400 font-medium">
-              {Math.round(project.processingProgress)}%
-            </span>
+      {/* Step trail */}
+      <div className="flex items-center gap-0">
+        {TRAIL.map((step, i) => {
+          const status = trailStatus(step.key, view);
+          return (
+            <div key={step.key} className="flex items-center flex-1 last:flex-none">
+              <div className="flex flex-col items-center gap-1">
+                <div className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-full transition-all duration-500 text-xs font-medium",
+                  status === "complete" && "bg-emerald-600/20 text-emerald-400",
+                  status === "active" && "gradient-brand text-white pulse-glow",
+                  status === "pending" && "bg-surface-200 text-surface-500",
+                )}>
+                  {status === "complete" ? <Check className="h-3.5 w-3.5" /> :
+                   status === "active" && (view === "running") ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+                   <span>{i + 1}</span>}
+                </div>
+                <span className={cn(
+                  "text-[10px] font-medium whitespace-nowrap",
+                  status === "active" ? "text-brand-400" : "text-surface-500"
+                )}>{step.label}</span>
+              </div>
+              {i < TRAIL.length - 1 && (
+                <div className={cn(
+                  "h-px flex-1 mx-1 mb-4 transition-all duration-500",
+                  trailStatus(TRAIL[i + 1].key, view) !== "pending" ? "bg-brand-500/40" : "bg-surface-200"
+                )} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Step content */}
+      {view === "uploading" && (
+        <GlassCard className="space-y-4 text-center py-8">
+          <Loader2 className="h-8 w-8 animate-spin text-brand-400 mx-auto" />
+          <p className="text-sm text-surface-600">Saving video to local storage…</p>
+        </GlassCard>
+      )}
+
+      {view === "transcript" && (
+        <GlassCard className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-surface-800">Add a Transcript</h2>
+            <p className="mt-1 text-sm text-surface-500">
+              Upload an SRT, VTT, or plain text file — or paste it directly. Skip if you don't have one.
+            </p>
           </div>
-          <ProgressBar value={project.processingProgress} />
-        </div>
-
-        <div className="space-y-1">
-          {steps.map((step) => (
-            <StepIndicator
-              key={step.key}
-              icon={step.icon}
-              label={step.label}
-              description={step.description}
-              status={getStepStatus(project.processingStep, step.key)}
-            />
-          ))}
-        </div>
-
-        {project.processingStep === "complete" && (
-          <div className="pt-2">
-            <Button
-              onClick={() => router.push("/library")}
-              size="lg"
-              className="w-full gap-2"
-            >
-              View Your Clips
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          </div>
-        )}
-      </GlassCard>
-
-      {needsTranscript && (
-        <GlassCard className="space-y-4">
-          <p className="text-sm text-surface-600">
-            Upload a transcript (SRT, VTT, or plain text) or paste it directly.
-            This will be analyzed by your local oMLX model to find clip-worthy moments.
-          </p>
           <TranscriptUpload
             projectId={id}
-            onUploaded={handleTranscriptUploaded}
+            onUploaded={async () => {
+              await refreshProjects();
+              setTranscriptReady(true);
+              setError(null);
+            }}
           />
+          <button
+            onClick={() => setTranscriptReady(true)}
+            className="flex items-center gap-1.5 text-xs text-surface-500 hover:text-surface-700 transition-colors cursor-pointer"
+          >
+            <SkipForward className="h-3.5 w-3.5" />
+            Skip this step
+          </button>
         </GlassCard>
       )}
 
-      {error && (
-        <GlassCard className="space-y-2">
-          <div className="flex items-center gap-2 text-amber-400">
-            <AlertCircle className="h-4 w-4" />
-            <span className="text-sm font-medium">Action needed</span>
+      {view === "analyze" && (
+        <GlassCard className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-surface-800">Analyze Content</h2>
+            <p className="mt-1 text-sm text-surface-500">
+              oMLX will scan the transcript and find the most engaging, clip-worthy moments.
+            </p>
           </div>
-          <p className="text-xs text-surface-500">{error}</p>
+          {error && (
+            <div className="flex items-start gap-2 rounded-xl bg-amber-500/10 p-3">
+              <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-surface-500">{error}</p>
+            </div>
+          )}
+          <Button onClick={runAnalysis} disabled={running} size="lg" className="w-full gap-2">
+            <Play className="h-4 w-4" />
+            Start AI Analysis
+          </Button>
         </GlassCard>
       )}
 
-      {project.processingStep !== "complete" && (
-        <Button
-          onClick={runProcessing}
-          disabled={processing}
-          size="lg"
-          className="w-full gap-2"
-        >
-          <Play className="h-4 w-4" />
-          {processing ? "Processing..." : "Run AI Analysis"}
-        </Button>
+      {view === "running" && (
+        <GlassCard className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-surface-800">
+              {project.processingStep === "analyzing" ? "Analyzing Content" : "Generating Clips"}
+            </h2>
+            <p className="mt-1 text-sm text-surface-500">
+              {project.processingStep === "analyzing"
+                ? "oMLX is finding the most engaging moments…"
+                : "Creating your optimized short-form clips…"}
+            </p>
+          </div>
+          <div className="flex items-center gap-3 text-sm text-surface-500">
+            <Loader2 className="h-4 w-4 animate-spin text-brand-400" />
+            <span>This may take a minute</span>
+          </div>
+        </GlassCard>
+      )}
+
+      {view === "complete" && (
+        <GlassCard className="space-y-6 text-center py-8">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-600/20 text-emerald-400 mx-auto">
+            <CheckCircle2 className="h-7 w-7" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-surface-800">Your clips are ready</h2>
+            <p className="mt-1 text-sm text-surface-500">Head to the library to review and export.</p>
+          </div>
+          <Button onClick={() => router.push("/library")} size="lg" className="w-full gap-2">
+            View Your Clips
+            <ArrowRight className="h-4 w-4" />
+          </Button>
+        </GlassCard>
       )}
     </div>
   );

@@ -33,7 +33,7 @@ export function extractClip(
       .setStartTime(startTime)
       .setDuration(duration)
       .videoFilters(ASPECT_FILTERS[aspectRatio])
-      .outputOptions(["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "128k"])
+      .outputOptions(["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"])
       .output(outPath)
       .on("end", () => resolve(outPath))
       .on("error", reject)

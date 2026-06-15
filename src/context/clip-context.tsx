@@ -32,6 +32,7 @@ interface ClipContextType {
   getClip: (id: string) => Clip | undefined;
   getProject: (id: string) => Project | undefined;
   updateClip: (id: string, updates: Partial<Clip>) => void;
+  deleteClips: (ids: string[]) => Promise<void>;
   toggleSocialAccount: (platform: string) => void;
 }
 
@@ -115,6 +116,11 @@ export function ClipProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const deleteClips = useCallback(async (ids: string[]) => {
+    setClips((prev) => prev.filter((c) => !ids.includes(c.id)));
+    await Promise.all(ids.map((id) => fetch(`/api/clips/${id}`, { method: "DELETE" })));
+  }, []);
+
   const toggleSocialAccount = useCallback((platform: string) => {
     setSocialAccounts((prev) =>
       prev.map((a) =>
@@ -144,6 +150,7 @@ export function ClipProvider({ children }: { children: ReactNode }) {
         getClip,
         getProject,
         updateClip,
+        deleteClips,
         toggleSocialAccount,
       }}
     >

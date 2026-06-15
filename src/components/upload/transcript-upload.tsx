@@ -15,6 +15,7 @@ export function TranscriptUpload({ projectId, onUploaded }: TranscriptUploadProp
   const [text, setText] = useState("");
   const [uploading, setUploading] = useState(false);
   const [done, setDone] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   const handleFileSelect = async (file: File) => {
     if (!projectId) return;
@@ -82,7 +83,10 @@ export function TranscriptUpload({ projectId, onUploaded }: TranscriptUploadProp
         </div>
       ) : mode === "file" ? (
         <div
-          className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-surface-300 p-8 cursor-pointer hover:border-brand-500/50 transition-all"
+          className={cn(
+            "flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 cursor-pointer transition-all",
+            dragging ? "border-brand-500 bg-brand-500/5" : "border-surface-300 hover:border-brand-500/50"
+          )}
           onClick={() => {
             const input = document.createElement("input");
             input.type = "file";
@@ -93,10 +97,19 @@ export function TranscriptUpload({ projectId, onUploaded }: TranscriptUploadProp
             };
             input.click();
           }}
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragEnter={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            const f = e.dataTransfer.files?.[0];
+            if (f) handleFileSelect(f);
+          }}
         >
           <Upload className="h-6 w-6 text-surface-500 mb-2" />
           <p className="text-sm text-surface-600">
-            {uploading ? "Uploading..." : "Drop an SRT, VTT, or TXT file"}
+            {uploading ? "Uploading..." : dragging ? "Drop to upload" : "Drop an SRT, VTT, or TXT file"}
           </p>
         </div>
       ) : (

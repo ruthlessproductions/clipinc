@@ -6,7 +6,7 @@ import { ClipCard } from "@/components/library/clip-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { ClipStatus } from "@/lib/types";
-import { Search, SlidersHorizontal, Film } from "lucide-react";
+import { Search, Film, CheckSquare, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const filters: { label: string; value: ClipStatus | "all" }[] = [
@@ -17,9 +17,11 @@ const filters: { label: string; value: ClipStatus | "all" }[] = [
 ];
 
 export default function LibraryPage() {
-  const { clips } = useClipContext();
+  const { clips, deleteClips } = useClipContext();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ClipStatus | "all">("all");
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
     let result = clips;
@@ -27,13 +29,38 @@ export default function LibraryPage() {
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(
-        (c) =>
-          c.title.toLowerCase().includes(q) ||
-          c.description.toLowerCase().includes(q)
+        (c) => c.title.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
       );
     }
     return result;
   }, [clips, filter, search]);
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (selected.size === filtered.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(filtered.map((c) => c.id)));
+    }
+  };
+
+  const handleDelete = async () => {
+    await deleteClips([...selected]);
+    setSelected(new Set());
+    setSelecting(false);
+  };
+
+  const exitSelect = () => {
+    setSelecting(false);
+    setSelected(new Set());
+  };
 
   return (
     <div className="px-6 py-10 space-y-6">
@@ -44,6 +71,30 @@ export default function LibraryPage() {
             {clips.length} clips across all projects
           </p>
         </div>
+        {!selecting ? (
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => setSelecting(true)}>
+            <CheckSquare className="h-4 w-4" />
+            Select
+          </Button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSelectAll}
+              className="text-xs text-surface-500 hover:text-surface-700 transition-colors cursor-pointer"
+            >
+              {selected.size === filtered.length ? "Deselect all" : "Select all"}
+            </button>
+            {selected.size > 0 && (
+              <Button size="sm" className="gap-2 bg-red-600/80 hover:bg-red-600 text-white border-0" onClick={handleDelete}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete {selected.size}
+              </Button>
+            )}
+            <button onClick={exitSelect} className="text-surface-500 hover:text-surface-700 transition-colors cursor-pointer">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-3">
@@ -82,15 +133,19 @@ export default function LibraryPage() {
           </div>
           <p className="text-sm text-surface-500">No clips found</p>
           <p className="text-xs text-surface-400 mt-1">
-            {search
-              ? "Try a different search term"
-              : "Upload a video to get started"}
+            {search ? "Try a different search term" : "Upload a video to get started"}
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((clip) => (
-            <ClipCard key={clip.id} clip={clip} />
+            <ClipCard
+              key={clip.id}
+              clip={clip}
+              selecting={selecting}
+              selected={selected.has(clip.id)}
+              onToggle={toggleSelect}
+            />
           ))}
         </div>
       )}

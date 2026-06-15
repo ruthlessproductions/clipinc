@@ -16,6 +16,8 @@ import {
   Download,
   Share2,
   ArrowLeft,
+  AlertCircle,
+  Loader2,
 } from "lucide-react";
 
 export default function ClipEditorPage({
@@ -28,6 +30,12 @@ export default function ClipEditorPage({
   const { getClip, updateClip } = useClipContext();
   const clip = getClip(id);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [startTime, setStartTime] = useState(clip?.startTime ?? 0);
+  const [endTime, setEndTime] = useState(clip?.endTime ?? 0);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clip?.aspectRatio ?? "9:16");
+  const [captions, setCaptions] = useState<Caption[]>(clip?.captions ?? []);
 
   if (!clip) {
     return (
@@ -37,21 +45,26 @@ export default function ClipEditorPage({
     );
   }
 
-  const [startTime, setStartTime] = useState(clip.startTime);
-  const [endTime, setEndTime] = useState(clip.endTime);
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(
-    clip.aspectRatio
-  );
-  const [captions, setCaptions] = useState<Caption[]>(clip.captions);
-
-  const handleSave = () => {
-    updateClip(clip.id, {
-      startTime,
-      endTime,
-      duration: endTime - startTime,
-      aspectRatio,
-      captions,
-    });
+  const handleExport = async () => {
+    setIsExporting(true);
+    setExportError(null);
+    updateClip(clip.id, { startTime, endTime, duration: endTime - startTime, aspectRatio, captions });
+    try {
+      const res = await fetch(`/api/clips/${clip.id}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aspect_ratio: aspectRatio }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setExportError(data.error ?? "Export failed");
+      } else {
+        window.location.href = `/api/clips/${clip.id}/download`;
+      }
+    } catch {
+      setExportError("Failed to connect to export API");
+    }
+    setIsExporting(false);
   };
 
   const previewDimensions = {
@@ -76,9 +89,9 @@ export default function ClipEditorPage({
           <p className="text-sm text-surface-500">{clip.description}</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={handleSave}>
-            <Download className="h-4 w-4" />
-            Export
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={isExporting}>
+            {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {isExporting ? "Exporting…" : "Export"}
           </Button>
           <Button
             size="sm"
@@ -89,6 +102,13 @@ export default function ClipEditorPage({
           </Button>
         </div>
       </div>
+
+      {exportError && (
+        <div className="flex items-center gap-2 rounded-xl bg-amber-500/10 px-4 py-3 text-xs text-amber-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {exportError}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
         <div className="space-y-6">

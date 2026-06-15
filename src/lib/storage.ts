@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
 
-const STORAGE_ROOT = path.join(process.cwd(), "storage");
+const STORAGE_ROOT = process.env.STORAGE_ROOT ?? path.join(/* turbopackIgnore: true */ process.cwd(), "storage");
 
 export const dirs = {
   videos: path.join(STORAGE_ROOT, "videos"),
