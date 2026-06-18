@@ -7,6 +7,8 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AspectRatioPicker } from "@/components/editor/aspect-ratio-picker";
+import { CaptionStylePicker } from "@/components/editor/caption-style-picker";
+import type { CaptionStyleId } from "@/lib/captions";
 import type { AspectRatio, SocialPlatform } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
@@ -57,6 +59,7 @@ export default function ExportPage({
   const [publishResults, setPublishResults] = useState<Record<string, { success: boolean; url?: string; error?: string }> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scheduled, setScheduled] = useState(false);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyleId | null>(null);
 
   if (!clip) {
     return (
@@ -76,7 +79,7 @@ export default function ExportPage({
     const res = await fetch(`/api/clips/${id}/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ aspect_ratio: aspectRatio }),
+      body: JSON.stringify({ aspect_ratio: aspectRatio, caption_style: captionStyle }),
     });
     if (!res.ok) {
       const data = await res.json();
@@ -173,6 +176,11 @@ export default function ExportPage({
       <GlassCard className="space-y-4">
         <h3 className="text-sm font-medium text-surface-700">Format</h3>
         <AspectRatioPicker value={aspectRatio} onChange={setAspectRatio} />
+      </GlassCard>
+
+      {/* Captions */}
+      <GlassCard className="space-y-4">
+        <CaptionStylePicker value={captionStyle} onChange={setCaptionStyle} />
       </GlassCard>
 
       {/* Platform selector */}

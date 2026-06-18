@@ -23,22 +23,28 @@ export function extractClip(
   clipId: string,
   startTime: number,
   endTime: number,
-  aspectRatio: AspectRatio = "9:16"
+  aspectRatio: AspectRatio = "9:16",
+  assPath?: string            // optional: path to a pre-written .ass file
 ): Promise<string> {
   const outPath = clipPath(clipId);
   const duration = endTime - startTime;
 
+  // Build video filter chain: aspect crop/scale, then optional ASS subtitles.
+  // Escape the path for ffmpeg's filter graph syntax (colons → \:).
+  const filters: string[] = [ASPECT_FILTERS[aspectRatio]];
+  if (assPath) {
+    const escaped = assPath.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
+    filters.push(`ass='${escaped}'`);
+  }
+
   return new Promise((resolve, reject) => {
     ffmpeg(sourcePath)
-      // Input seeking (-ss before -i) is orders of magnitude faster than output
-      // seeking for long videos — lands on the nearest keyframe, which is fine
-      // for podcast/talking-head content.
       .inputOptions(["-ss", String(startTime)])
       .setDuration(duration)
-      .videoFilters(ASPECT_FILTERS[aspectRatio])
+      .videoFilters(filters.join(","))
       .outputOptions([
         "-c:v", "libx264",
-        "-preset", "ultrafast",  // faster encode; quality is still fine for clips
+        "-preset", "ultrafast",
         "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",

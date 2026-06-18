@@ -1,6 +1,11 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { getSetting } from "./db";
+
 const OMLX_BASE_URL = process.env.OMLX_URL || "http://localhost:8000";
 const OMLX_MODEL = process.env.OMLX_MODEL || "mlx-community/Llama-3.3-70B-Instruct-4bit";
 const OMLX_API_KEY = process.env.OMLX_API_KEY || "";
+
+const CLAUDE_MODEL = "claude-opus-4-5";
 
 // Max chars per chunk (~10 min of dialogue at average speaking pace)
 const CHUNK_CHARS = 12000;
@@ -83,11 +88,8 @@ function parseTimestamp(ts: string): number {
   return 0;
 }
 
-async function analyzeChunk(
-  chunk: string,
-  videoDuration: number
-): Promise<HighlightSegment[]> {
-  const prompt = `You are a viral content expert. Analyze this podcast transcript segment and identify the most engaging, shareable moments that would work as short-form clips (15-90 seconds each).
+function buildPrompt(chunk: string, videoDuration: number): string {
+  return `You are a viral content expert. Analyze this podcast transcript segment and identify the most engaging, shareable moments that would work as short-form clips (15-90 seconds each).
 
 Each line is prefixed with [Xs] where X is the exact timestamp in seconds from the start of the video. Use these values directly as start_time and end_time — do not convert or estimate.
 
@@ -106,13 +108,25 @@ Transcript:
 ${chunk}
 
 Respond with ONLY a JSON array with keys: title, description, start_time, end_time, score. No markdown, no explanation.`;
+}
 
+function parseHighlights(content: string): HighlightSegment[] {
+  const jsonMatch = content.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) return [];
+  try {
+    return JSON.parse(jsonMatch[0]) as HighlightSegment[];
+  } catch {
+    return [];
+  }
+}
+
+async function analyzeChunkLocal(chunk: string, videoDuration: number): Promise<HighlightSegment[]> {
   const res = await fetch(`${OMLX_BASE_URL}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       model: OMLX_MODEL,
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role: "user", content: buildPrompt(chunk, videoDuration) }],
       temperature: 0.3,
       max_tokens: 2048,
     }),
@@ -124,11 +138,29 @@ Respond with ONLY a JSON array with keys: title, description, start_time, end_ti
   }
 
   const data = await res.json();
-  const content = data.choices?.[0]?.message?.content ?? "[]";
-  const jsonMatch = content.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) return [];
+  return parseHighlights(data.choices?.[0]?.message?.content ?? "[]");
+}
 
-  return JSON.parse(jsonMatch[0]) as HighlightSegment[];
+async function analyzeChunkClaude(chunk: string, videoDuration: number): Promise<HighlightSegment[]> {
+  const apiKey = getSetting("claude_api_key") || process.env.ANTHROPIC_API_KEY || "";
+  if (!apiKey) throw new Error("Claude API key not set. Add it in Settings → Model Provider.");
+
+  const client = new Anthropic({ apiKey });
+  const message = await client.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 2048,
+    messages: [{ role: "user", content: buildPrompt(chunk, videoDuration) }],
+  });
+
+  const content = message.content[0].type === "text" ? message.content[0].text : "[]";
+  return parseHighlights(content);
+}
+
+async function analyzeChunk(chunk: string, videoDuration: number): Promise<HighlightSegment[]> {
+  const provider = getSetting("model_provider") ?? "local";
+  return provider === "claude"
+    ? analyzeChunkClaude(chunk, videoDuration)
+    : analyzeChunkLocal(chunk, videoDuration);
 }
 
 export async function detectHighlights(

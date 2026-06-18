@@ -68,6 +68,17 @@ try { db.exec(`ALTER TABLE projects ADD COLUMN status_message TEXT`); } catch {}
 try { db.exec(`ALTER TABLE clips ADD COLUMN scheduled_publish_at TEXT`); } catch {}
 try { db.exec(`ALTER TABLE clips ADD COLUMN scheduled_platforms TEXT`); } catch {}
 
+// App settings (key/value store)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  )
+`);
+// Default provider is local oMLX
+db.exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('model_provider', 'local')`);
+db.exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('claude_api_key', '')`);
+
 // PKCE state store (short-lived, used during OAuth redirects)
 db.exec(`
   CREATE TABLE IF NOT EXISTS pkce_challenges (
@@ -223,6 +234,15 @@ export function getDueScheduledClips() {
 
 export function getSocialAccount(platform: string) {
   return db.prepare("SELECT * FROM social_accounts WHERE platform = ?").get(platform) as Record<string, unknown> | undefined;
+}
+
+export function getSetting(key: string): string | null {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setSetting(key: string, value: string) {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 
 export function storePkceVerifier(state: string, verifier: string) {

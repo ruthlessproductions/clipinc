@@ -8,7 +8,10 @@ import { Button } from "@/components/ui/button";
 import { TrimSlider } from "@/components/editor/trim-slider";
 import { AspectRatioPicker } from "@/components/editor/aspect-ratio-picker";
 import { CaptionEditor } from "@/components/editor/caption-editor";
+import { CaptionStylePicker } from "@/components/editor/caption-style-picker";
+import { getCaptionStyle } from "@/lib/captions";
 import type { AspectRatio, Caption } from "@/lib/types";
+import type { CaptionStyleId } from "@/lib/captions";
 import {
   Play,
   Pause,
@@ -36,6 +39,8 @@ export default function ClipEditorPage({
   const [endTime, setEndTime] = useState(clip?.endTime ?? 0);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clip?.aspectRatio ?? "9:16");
   const [captions, setCaptions] = useState<Caption[]>(clip?.captions ?? []);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyleId | null>(null);
+  const [currentTime, setCurrentTime] = useState(clip?.startTime ?? 0);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Seek to startTime when metadata is ready or startTime changes (and not playing)
@@ -45,18 +50,19 @@ export default function ClipEditorPage({
     vid.currentTime = startTime;
   }, [startTime, isPlaying]);
 
-  // Enforce the end boundary during playback
+  // Enforce the end boundary during playback + track currentTime for caption preview
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
-    const check = () => {
+    const onTimeUpdate = () => {
+      setCurrentTime(vid.currentTime);
       if (vid.currentTime >= endTime) {
         vid.pause();
         vid.currentTime = startTime;
       }
     };
-    vid.addEventListener("timeupdate", check);
-    return () => vid.removeEventListener("timeupdate", check);
+    vid.addEventListener("timeupdate", onTimeUpdate);
+    return () => vid.removeEventListener("timeupdate", onTimeUpdate);
   }, [startTime, endTime]);
 
   const togglePlay = useCallback(() => {
@@ -92,7 +98,7 @@ export default function ClipEditorPage({
       const res = await fetch(`/api/clips/${clip.id}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aspect_ratio: aspectRatio }),
+        body: JSON.stringify({ aspect_ratio: aspectRatio, caption_style: captionStyle }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -170,14 +176,12 @@ export default function ClipEditorPage({
                 playsInline
               />
 
-              {captions.length > 0 && (
-                <div className="absolute bottom-4 left-4 right-4 z-20 pointer-events-none">
-                  <div className="rounded-lg bg-black/70 px-3 py-2 text-center">
-                    <p className="text-white text-sm font-medium">
-                      {captions[0].text}
-                    </p>
-                  </div>
-                </div>
+              {captionStyle && captions.length > 0 && (
+                <CaptionPreviewOverlay
+                  captions={captions}
+                  currentTime={currentTime}
+                  styleId={captionStyle}
+                />
               )}
 
               <button
@@ -214,11 +218,83 @@ export default function ClipEditorPage({
             <AspectRatioPicker value={aspectRatio} onChange={setAspectRatio} />
           </GlassCard>
 
+          <GlassCard className="space-y-4">
+            <CaptionStylePicker value={captionStyle} onChange={setCaptionStyle} />
+          </GlassCard>
+
           <GlassCard>
             <CaptionEditor captions={captions} onUpdate={setCaptions} />
           </GlassCard>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Live caption preview overlay ─────────────────────────────────────────────
+
+function CaptionPreviewOverlay({
+  captions,
+  currentTime,
+  styleId,
+}: {
+  captions: Caption[];
+  currentTime: number;
+  styleId: CaptionStyleId;
+}) {
+  const style = getCaptionStyle(styleId);
+
+  // Find the active caption segment
+  const seg = captions.find(
+    (c) => currentTime >= c.startTime && currentTime < c.endTime
+  );
+  if (!seg) return null;
+
+  // Approximate which word is active
+  const words = seg.text.trim().split(/\s+/).filter(Boolean);
+  const elapsed = currentTime - seg.startTime;
+  const duration = seg.endTime - seg.startTime;
+  const totalLen = words.reduce((s, w) => s + Math.max(w.length, 1), 0);
+
+  let cursor = 0;
+  let activeIdx = words.length - 1;
+  for (let i = 0; i < words.length; i++) {
+    const wordFrac = Math.max(words[i].length, 1) / totalLen;
+    const wordEnd = cursor + wordFrac * duration;
+    if (elapsed < wordEnd) { activeIdx = i; break; }
+    cursor += wordFrac * duration;
+  }
+
+  // Show wordsPerLine words centred on active word
+  const half = Math.floor(style.wordsPerLine / 2);
+  const lineStart = Math.max(0, Math.min(activeIdx - half, words.length - style.wordsPerLine));
+  const lineWords = words.slice(lineStart, lineStart + style.wordsPerLine);
+  const activeInLine = activeIdx - lineStart;
+
+  return (
+    <div className="absolute bottom-4 left-2 right-2 z-20 pointer-events-none flex justify-center">
+      <p
+        className="text-center font-bold leading-tight drop-shadow-lg"
+        style={{
+          fontSize: "clamp(14px, 4.5vw, 20px)",
+          WebkitTextStroke: "1px black",
+          textShadow: "0 0 6px #000, 0 0 12px #000",
+          color: style.cssColor,
+        }}
+      >
+        {lineWords.map((word, i) => (
+          <span
+            key={i}
+            style={{
+              color: i === activeInLine ? style.cssHighlight : style.cssColor,
+              marginRight: i < lineWords.length - 1 ? "0.35em" : 0,
+              transition: "color 0.1s",
+            }}
+          >
+            {word}
+          </span>
+        ))}
+      </p>
     </div>
   );
 }
