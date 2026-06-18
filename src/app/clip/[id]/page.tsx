@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useClipContext } from "@/context/clip-context";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -10,7 +10,6 @@ import { AspectRatioPicker } from "@/components/editor/aspect-ratio-picker";
 import { CaptionEditor } from "@/components/editor/caption-editor";
 import type { AspectRatio, Caption } from "@/lib/types";
 import {
-  Film,
   Play,
   Pause,
   Download,
@@ -27,8 +26,9 @@ export default function ClipEditorPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
-  const { getClip, updateClip } = useClipContext();
+  const { getClip, getProject, updateClip } = useClipContext();
   const clip = getClip(id);
+  const project = clip ? getProject(clip.projectId) : undefined;
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -36,6 +36,39 @@ export default function ClipEditorPage({
   const [endTime, setEndTime] = useState(clip?.endTime ?? 0);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clip?.aspectRatio ?? "9:16");
   const [captions, setCaptions] = useState<Caption[]>(clip?.captions ?? []);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Seek to startTime when metadata is ready or startTime changes (and not playing)
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid || isPlaying) return;
+    vid.currentTime = startTime;
+  }, [startTime, isPlaying]);
+
+  // Enforce the end boundary during playback
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    const check = () => {
+      if (vid.currentTime >= endTime) {
+        vid.pause();
+        vid.currentTime = startTime;
+      }
+    };
+    vid.addEventListener("timeupdate", check);
+    return () => vid.removeEventListener("timeupdate", check);
+  }, [startTime, endTime]);
+
+  const togglePlay = useCallback(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    if (vid.paused) {
+      if (vid.currentTime >= endTime) vid.currentTime = startTime;
+      vid.play();
+    } else {
+      vid.pause();
+    }
+  }, [startTime, endTime]);
 
   if (!clip) {
     return (
@@ -48,6 +81,12 @@ export default function ClipEditorPage({
   const handleExport = async () => {
     setIsExporting(true);
     setExportError(null);
+    // Persist trim changes to DB before exporting so the export API picks them up
+    await fetch(`/api/clips/${clip.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ startTime, endTime, duration: endTime - startTime, aspectRatio }),
+    }).catch(() => {});
     updateClip(clip.id, { startTime, endTime, duration: endTime - startTime, aspectRatio, captions });
     try {
       const res = await fetch(`/api/clips/${clip.id}/export`, {
@@ -114,14 +153,25 @@ export default function ClipEditorPage({
         <div className="space-y-6">
           <GlassCard className="flex items-center justify-center min-h-[400px]">
             <div
-              className="relative rounded-xl bg-surface-100 flex items-center justify-center overflow-hidden transition-all duration-300"
+              className="relative rounded-xl bg-black overflow-hidden transition-all duration-300"
               style={{ width: dims.width, height: dims.height }}
             >
-              <div className="absolute inset-0 bg-gradient-to-br from-brand-900/30 via-surface-0/50 to-surface-0/70" />
-              <Film className="h-12 w-12 text-surface-400 relative z-10" />
+              <video
+                ref={videoRef}
+                src={`/api/projects/${clip.projectId}/video`}
+                className="absolute inset-0 w-full h-full object-cover"
+                preload="auto"
+                onLoadedMetadata={() => {
+                  // Seek to clip start as soon as we know the video's timeline
+                  if (videoRef.current) videoRef.current.currentTime = startTime;
+                }}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                playsInline
+              />
 
               {captions.length > 0 && (
-                <div className="absolute bottom-4 left-4 right-4 z-20">
+                <div className="absolute bottom-4 left-4 right-4 z-20 pointer-events-none">
                   <div className="rounded-lg bg-black/70 px-3 py-2 text-center">
                     <p className="text-white text-sm font-medium">
                       {captions[0].text}
@@ -131,7 +181,7 @@ export default function ClipEditorPage({
               )}
 
               <button
-                onClick={() => setIsPlaying(!isPlaying)}
+                onClick={togglePlay}
                 className="absolute inset-0 z-30 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
               >
                 <div className="flex h-14 w-14 items-center justify-center rounded-full gradient-brand glow-strong">
@@ -147,7 +197,7 @@ export default function ClipEditorPage({
 
           <GlassCard>
             <TrimSlider
-              duration={clip.endTime + 60}
+              duration={project?.duration || clip.endTime + 120}
               startTime={startTime}
               endTime={endTime}
               onStartChange={setStartTime}

@@ -69,6 +69,18 @@ export default function ProcessingPage({
 
   useEffect(() => stopPolling, [stopPolling]);
 
+  // Stop polling and refresh clips when project reaches complete
+  const prevStepRef = useRef<string | null>(null);
+  useEffect(() => {
+    const step = project?.processingStep;
+    if (step === "complete" && prevStepRef.current !== "complete") {
+      stopPolling();
+      setRunning(false);
+      refreshClips();
+    }
+    prevStepRef.current = step ?? null;
+  }, [project?.processingStep, stopPolling, refreshClips]);
+
   const runAnalysis = useCallback(async () => {
     setRunning(true);
     setError(null);
@@ -79,17 +91,17 @@ export default function ProcessingPage({
       const data = await res.json();
       if (!res.ok) {
         setError(data.error);
+        stopPolling();
+        setRunning(false);
         await refreshProjects();
-      } else {
-        await refreshProjects();
-        await refreshClips();
       }
+      // On success the analysis runs in the background — keep polling until complete
     } catch {
       setError("Failed to connect to the processing API");
+      stopPolling();
+      setRunning(false);
     }
-    stopPolling();
-    setRunning(false);
-  }, [id, refreshProjects, refreshClips, stopPolling]);
+  }, [id, refreshProjects, stopPolling]);
 
   if (!project) {
     return (
@@ -209,8 +221,21 @@ export default function ProcessingPage({
             </p>
           </div>
           <div className="flex items-center gap-3 text-sm text-surface-500">
-            <Loader2 className="h-4 w-4 animate-spin text-brand-400" />
-            <span>This may take a minute</span>
+            <Loader2 className="h-4 w-4 animate-spin text-brand-400 shrink-0" />
+            <span>{project.statusMessage ?? "This may take a minute"}</span>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Error surfaced from background job */}
+      {view === "analyze" && project.statusMessage?.startsWith("Error:") && (
+        <GlassCard className="space-y-2">
+          <div className="flex items-start gap-2 text-amber-400">
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-medium">Last run failed</p>
+              <p className="text-xs text-surface-500 mt-1">{project.statusMessage}</p>
+            </div>
           </div>
         </GlassCard>
       )}

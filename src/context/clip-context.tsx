@@ -29,6 +29,8 @@ interface ClipContextType {
   uploadUrl: (url: string) => Promise<string>;
   refreshProjects: () => Promise<void>;
   refreshClips: () => Promise<void>;
+  refreshSocialAccounts: () => Promise<void>;
+  disconnectAccount: (platform: string) => Promise<void>;
   getClip: (id: string) => Clip | undefined;
   getProject: (id: string) => Project | undefined;
   updateClip: (id: string, updates: Partial<Clip>) => void;
@@ -69,10 +71,34 @@ export function ClipProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const refreshSocialAccounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/social/accounts");
+      if (res.ok) {
+        const data = await res.json();
+        setSocialAccounts(data);
+      }
+    } catch {}
+  }, []);
+
+  const disconnectAccount = useCallback(async (platform: string) => {
+    await fetch(`/api/social/${platform}/disconnect`, { method: "POST" });
+    await refreshSocialAccounts();
+  }, [refreshSocialAccounts]);
+
   useEffect(() => {
     refreshProjects();
     refreshClips();
-  }, [refreshProjects, refreshClips]);
+    refreshSocialAccounts();
+  }, [refreshProjects, refreshClips, refreshSocialAccounts]);
+
+  // Poll for scheduled clips every 60 seconds while the app is open
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetch("/api/social/scheduled-check", { method: "POST" }).catch(() => {});
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const uploadVideo = useCallback(async (file: File): Promise<string> => {
     const form = new FormData();
@@ -147,6 +173,8 @@ export function ClipProvider({ children }: { children: ReactNode }) {
         uploadUrl,
         refreshProjects,
         refreshClips,
+        refreshSocialAccounts,
+        disconnectAccount,
         getClip,
         getProject,
         updateClip,

@@ -6,6 +6,42 @@ import { transcriptPath } from "@/lib/storage";
 import { getVideoDuration } from "@/lib/ffmpeg";
 import { detectHighlights, checkOmlxHealth } from "@/lib/llm";
 
+async function runAnalysis(id: string, transcript: string, duration: number) {
+  try {
+    updateProject(id, { processing_step: "analyzing", processing_progress: 50, status_message: "Starting analysis…" });
+
+    const highlights = await detectHighlights(
+      transcript,
+      duration || 3600,
+      (message, progress) => updateProject(id, { status_message: message, processing_progress: progress })
+    );
+
+    updateProject(id, { processing_step: "generating", processing_progress: 75, status_message: "Generating clips…" });
+
+    for (const h of highlights) {
+      createClip({
+        id: uuid(),
+        project_id: id,
+        title: h.title,
+        description: h.description,
+        start_time: h.start_time,
+        end_time: h.end_time,
+        duration: h.end_time - h.start_time,
+        score: h.score,
+      });
+    }
+
+    updateProject(id, { processing_step: "complete", processing_progress: 100, status_message: null });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    updateProject(id, {
+      processing_step: "transcribing",
+      processing_progress: 25,
+      status_message: `Error: ${message}`,
+    });
+  }
+}
+
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -24,7 +60,7 @@ export async function POST(
     try {
       duration = await getVideoDuration(filePath);
       updateProject(id, { duration, processing_step: "transcribing", processing_progress: 20 });
-    } catch (e) {
+    } catch {
       return NextResponse.json({ error: "Failed to read video file. Is ffmpeg installed?" }, { status: 500 });
     }
   }
@@ -43,14 +79,12 @@ export async function POST(
   if (!transcript) {
     updateProject(id, { processing_step: "transcribing", processing_progress: 25 });
     return NextResponse.json({
-      error: "No transcript available. Upload a transcript file or paste the text at /api/projects/{id}/transcript",
+      error: "No transcript available. Upload a transcript file or paste the text.",
       needs_transcript: true,
     }, { status: 422 });
   }
 
-  // Step 3: Detect highlights via oMLX
-  updateProject(id, { processing_step: "analyzing", processing_progress: 50 });
-
+  // Step 3: Check oMLX is reachable before firing off the background job
   const omlxUp = await checkOmlxHealth();
   if (!omlxUp) {
     return NextResponse.json({
@@ -59,31 +93,9 @@ export async function POST(
     }, { status: 503 });
   }
 
-  let highlights;
-  try {
-    highlights = await detectHighlights(transcript, duration || 3600);
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: `LLM analysis failed: ${message}` }, { status: 500 });
-  }
+  // Step 4: Fire off analysis in background — don't await so the response
+  // returns immediately and the client polls for state changes.
+  runAnalysis(id, transcript, duration);
 
-  updateProject(id, { processing_step: "generating", processing_progress: 75 });
-
-  // Step 4: Create clip records
-  for (const h of highlights) {
-    createClip({
-      id: uuid(),
-      project_id: id,
-      title: h.title,
-      description: h.description,
-      start_time: h.start_time,
-      end_time: h.end_time,
-      duration: h.end_time - h.start_time,
-      score: h.score,
-    });
-  }
-
-  updateProject(id, { processing_step: "complete", processing_progress: 100 });
-
-  return NextResponse.json({ success: true, clips_created: highlights.length });
+  return NextResponse.json({ started: true });
 }

@@ -43,6 +43,7 @@ export interface Project {
   duration: number;
   processingStep: ProcessingStep;
   processingProgress: number;
+  statusMessage: string | null;
   clips: Clip[];
   createdAt: string;
 }

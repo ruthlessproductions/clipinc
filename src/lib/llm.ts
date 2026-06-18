@@ -133,7 +133,8 @@ Respond with ONLY a JSON array with keys: title, description, start_time, end_ti
 
 export async function detectHighlights(
   transcript: string,
-  videoDuration: number
+  videoDuration: number,
+  onProgress?: (message: string, progress: number) => void
 ): Promise<HighlightSegment[]> {
   const compressed = compressTranscript(transcript);
 
@@ -145,9 +146,18 @@ export async function detectHighlights(
     offset += CHUNK_CHARS - 1000; // 1000-char overlap
   }
 
-  const perChunk = await Promise.all(
-    chunks.map((chunk) => analyzeChunk(chunk, videoDuration))
-  );
+  // Sequential — local models can only run one inference at a time anyway
+  const perChunk: HighlightSegment[][] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    onProgress?.(`Analyzing chunk ${i + 1} of ${chunks.length}…`, 50 + Math.round((i / chunks.length) * 20));
+    try {
+      const result = await analyzeChunk(chunks[i], videoDuration);
+      perChunk.push(result);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Chunk ${i + 1}/${chunks.length} failed: ${msg}`);
+    }
+  }
 
   const all = perChunk.flat().filter(
     (h) =>

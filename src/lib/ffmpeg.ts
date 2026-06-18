@@ -30,10 +30,21 @@ export function extractClip(
 
   return new Promise((resolve, reject) => {
     ffmpeg(sourcePath)
-      .setStartTime(startTime)
+      // Input seeking (-ss before -i) is orders of magnitude faster than output
+      // seeking for long videos — lands on the nearest keyframe, which is fine
+      // for podcast/talking-head content.
+      .inputOptions(["-ss", String(startTime)])
       .setDuration(duration)
       .videoFilters(ASPECT_FILTERS[aspectRatio])
-      .outputOptions(["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"])
+      .outputOptions([
+        "-c:v", "libx264",
+        "-preset", "ultrafast",  // faster encode; quality is still fine for clips
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+      ])
       .output(outPath)
       .on("end", () => resolve(outPath))
       .on("error", reject)

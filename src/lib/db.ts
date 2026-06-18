@@ -22,6 +22,7 @@ db.exec(`
     duration REAL DEFAULT 0,
     processing_step TEXT DEFAULT 'uploading',
     processing_progress REAL DEFAULT 0,
+    status_message TEXT,
     transcript TEXT,
     created_at TEXT DEFAULT (datetime('now'))
   );
@@ -62,6 +63,23 @@ db.exec(`
   INSERT OR IGNORE INTO social_accounts (platform) VALUES ('tiktok'), ('youtube'), ('instagram'), ('twitter');
 `);
 
+// Migrations
+try { db.exec(`ALTER TABLE projects ADD COLUMN status_message TEXT`); } catch {}
+try { db.exec(`ALTER TABLE clips ADD COLUMN scheduled_publish_at TEXT`); } catch {}
+try { db.exec(`ALTER TABLE clips ADD COLUMN scheduled_platforms TEXT`); } catch {}
+
+// PKCE state store (short-lived, used during OAuth redirects)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pkce_challenges (
+    state      TEXT PRIMARY KEY,
+    verifier   TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+// Clean up stale entries older than 15 minutes
+try { db.exec(`DELETE FROM pkce_challenges WHERE created_at < datetime('now', '-15 minutes')`); } catch {}
+
+
 export default db;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -74,6 +92,7 @@ export function mapProject(row: Record<string, any>, clips: ReturnType<typeof ma
     duration: row.duration as number,
     processingStep: row.processing_step as string,
     processingProgress: row.processing_progress as number,
+    statusMessage: (row.status_message ?? null) as string | null,
     clips,
     createdAt: row.created_at as string,
   };
@@ -194,6 +213,26 @@ export function setCaptions(
 
 export function getSocialAccounts() {
   return db.prepare("SELECT platform, connected, username FROM social_accounts").all();
+}
+
+export function getDueScheduledClips() {
+  return db
+    .prepare(`SELECT * FROM clips WHERE scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= datetime('now')`)
+    .all() as Record<string, unknown>[];
+}
+
+export function getSocialAccount(platform: string) {
+  return db.prepare("SELECT * FROM social_accounts WHERE platform = ?").get(platform) as Record<string, unknown> | undefined;
+}
+
+export function storePkceVerifier(state: string, verifier: string) {
+  db.prepare("INSERT OR REPLACE INTO pkce_challenges (state, verifier) VALUES (?, ?)").run(state, verifier);
+}
+
+export function consumePkceVerifier(state: string): string | undefined {
+  const row = db.prepare("SELECT verifier FROM pkce_challenges WHERE state = ?").get(state) as { verifier: string } | undefined;
+  db.prepare("DELETE FROM pkce_challenges WHERE state = ?").run(state);
+  return row?.verifier;
 }
 
 export function updateSocialAccount(

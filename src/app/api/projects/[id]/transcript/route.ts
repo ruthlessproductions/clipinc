@@ -3,6 +3,7 @@ import fs from "fs";
 import { getProject, updateProject } from "@/lib/db";
 import { transcriptPath, saveUploadedFile } from "@/lib/storage";
 
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -26,9 +27,7 @@ export async function POST(
 
     const dest = transcriptPath(id);
     await saveUploadedFile(file, dest);
-
-    const raw = fs.readFileSync(dest, "utf-8");
-    transcriptText = stripTimecodes(raw);
+    transcriptText = fs.readFileSync(dest, "utf-8");
   } else {
     const body = await req.json();
     transcriptText = body.text;
@@ -38,20 +37,13 @@ export async function POST(
     fs.writeFileSync(transcriptPath(id), transcriptText);
   }
 
+  // Store raw transcript — compressTranscript in llm.ts handles timecode parsing
   updateProject(id, {
     transcript: transcriptText,
-    processing_step: "analyzing",
-    processing_progress: 50,
+    processing_step: "transcribing",
+    processing_progress: 25,
   });
 
   return NextResponse.json({ success: true, length: transcriptText.length });
 }
 
-function stripTimecodes(raw: string): string {
-  return raw
-    .replace(/^\d+\s*$/gm, "")
-    .replace(/\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}/g, "")
-    .replace(/WEBVTT.*$/m, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
