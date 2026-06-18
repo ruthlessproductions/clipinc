@@ -19,6 +19,8 @@ import {
   Check,
   Loader2,
   SkipForward,
+  Send,
+  Trash2,
 } from "lucide-react";
 
 type StepView = "uploading" | "transcript" | "analyze" | "running" | "complete";
@@ -63,6 +65,18 @@ export default function ProcessingPage({
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Chat state
+  type Msg = { role: "user" | "assistant"; content: string };
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Scroll chat to bottom when messages change
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
   }, []);
@@ -81,13 +95,66 @@ export default function ProcessingPage({
     prevStepRef.current = step ?? null;
   }, [project?.processingStep, stopPolling, refreshClips]);
 
+  const sendChatMessage = useCallback(async () => {
+    const text = chatInput.trim();
+    if (!text || chatLoading) return;
+    setChatInput("");
+    const userMsg: Msg = { role: "user", content: text };
+    setMessages((prev) => [...prev, userMsg]);
+    setChatLoading(true);
+
+    try {
+      const res = await fetch(`/api/projects/${id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, history: messages }),
+      });
+
+      // Handle streaming (Claude) or JSON (local)
+      const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("text/plain")) {
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        let reply = "";
+        setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+        while (reader) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          reply += decoder.decode(value, { stream: true });
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: "assistant", content: reply };
+            return updated;
+          });
+        }
+      } else {
+        const data = await res.json();
+        if (data.reply) setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+        if (data.error) setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${data.error}` }]);
+      }
+    } catch {
+      setMessages((prev) => [...prev, { role: "assistant", content: "Failed to get a response. Check your model settings." }]);
+    }
+    setChatLoading(false);
+  }, [chatInput, chatLoading, id]);
+
+  const clearChat = useCallback(() => setMessages([]), []);
+
   const runAnalysis = useCallback(async () => {
     setRunning(true);
     setError(null);
     stopPolling();
     pollRef.current = setInterval(() => refreshProjects(), 2000);
+    const userContext = messages.length > 0
+      ? messages.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n")
+      : undefined;
+
     try {
-      const res = await fetch(`/api/projects/${id}/process`, { method: "POST" });
+      const res = await fetch(`/api/projects/${id}/process`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_context: userContext }),
+      });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error);
@@ -188,22 +255,80 @@ export default function ProcessingPage({
       )}
 
       {view === "analyze" && (
-        <GlassCard className="space-y-6">
-          <div>
-            <h2 className="text-lg font-semibold text-surface-800">Analyze Content</h2>
-            <p className="mt-1 text-sm text-surface-500">
-              oMLX will scan the transcript and find the most engaging, clip-worthy moments.
-            </p>
+        <GlassCard className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-surface-800">Tell the AI what you want</h2>
+              <p className="mt-0.5 text-sm text-surface-500">
+                Describe specific moments, topics, or styles — or just click Analyze to let it decide.
+              </p>
+            </div>
+            {messages.length > 0 && (
+              <button
+                onClick={clearChat}
+                className="text-surface-400 hover:text-surface-600 transition-colors cursor-pointer"
+                title="Clear conversation"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            )}
           </div>
+
+          {/* Chat messages */}
+          {messages.length > 0 && (
+            <div className="max-h-64 overflow-y-auto space-y-3 rounded-xl bg-surface-100/50 p-3">
+              {messages.map((msg, i) => (
+                <div key={i} className={cn("flex gap-2", msg.role === "user" ? "justify-end" : "justify-start")}>
+                  <div className={cn(
+                    "max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed",
+                    msg.role === "user"
+                      ? "gradient-brand text-white"
+                      : "glass text-surface-700"
+                  )}>
+                    {msg.content || <span className="opacity-50">…</span>}
+                  </div>
+                </div>
+              ))}
+              {chatLoading && messages[messages.length - 1]?.role === "user" && (
+                <div className="flex justify-start">
+                  <div className="glass rounded-xl px-3 py-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-brand-400" />
+                  </div>
+                </div>
+              )}
+              <div ref={chatBottomRef} />
+            </div>
+          )}
+
+          {/* Input */}
+          <div className="flex gap-2">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendChatMessage()}
+              placeholder="e.g. Find the part where we talk about pricing…"
+              className="flex-1 rounded-xl border border-surface-300 bg-surface-100/50 px-3 py-2 text-sm text-surface-800 placeholder:text-surface-400 focus:border-brand-500 focus:outline-none"
+              disabled={chatLoading}
+            />
+            <button
+              onClick={sendChatMessage}
+              disabled={!chatInput.trim() || chatLoading}
+              className="flex h-10 w-10 items-center justify-center rounded-xl gradient-brand text-white disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed transition-opacity"
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
+
           {error && (
             <div className="flex items-start gap-2 rounded-xl bg-amber-500/10 p-3">
               <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
               <p className="text-xs text-surface-500">{error}</p>
             </div>
           )}
+
           <Button onClick={runAnalysis} disabled={running} size="lg" className="w-full gap-2">
-            <Play className="h-4 w-4" />
-            Start AI Analysis
+            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            {running ? "Starting…" : "Start AI Analysis"}
           </Button>
         </GlassCard>
       )}

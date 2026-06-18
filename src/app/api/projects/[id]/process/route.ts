@@ -1,19 +1,20 @@
 import { NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
 import fs from "fs";
-import { getProject, updateProject, createClip } from "@/lib/db";
+import { getProject, updateProject, createClip, getSetting } from "@/lib/db";
 import { transcriptPath } from "@/lib/storage";
 import { getVideoDuration } from "@/lib/ffmpeg";
 import { detectHighlights, checkOmlxHealth } from "@/lib/llm";
 
-async function runAnalysis(id: string, transcript: string, duration: number) {
+async function runAnalysis(id: string, transcript: string, duration: number, userContext?: string) {
   try {
     updateProject(id, { processing_step: "analyzing", processing_progress: 50, status_message: "Starting analysis…" });
 
     const highlights = await detectHighlights(
       transcript,
       duration || 3600,
-      (message, progress) => updateProject(id, { status_message: message, processing_progress: progress })
+      (message, progress) => updateProject(id, { status_message: message, processing_progress: progress }),
+      userContext
     );
 
     updateProject(id, { processing_step: "generating", processing_progress: 75, status_message: "Generating clips…" });
@@ -43,10 +44,12 @@ async function runAnalysis(id: string, transcript: string, duration: number) {
 }
 
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const body = await req.json().catch(() => ({}));
+  const userContext: string | undefined = body.user_context || undefined;
   const project = getProject(id);
   if (!project) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
@@ -84,18 +87,21 @@ export async function POST(
     }, { status: 422 });
   }
 
-  // Step 3: Check oMLX is reachable before firing off the background job
-  const omlxUp = await checkOmlxHealth();
-  if (!omlxUp) {
-    return NextResponse.json({
-      error: "oMLX server not reachable. Start oMLX and ensure it's running at " + (process.env.OMLX_URL || "http://localhost:8000"),
-      needs_omlx: true,
-    }, { status: 503 });
+  // Step 3: If using local model, verify oMLX is reachable. Skip check for Claude.
+  const provider = getSetting("model_provider") ?? "local";
+  if (provider !== "claude") {
+    const omlxUp = await checkOmlxHealth();
+    if (!omlxUp) {
+      return NextResponse.json({
+        error: "oMLX server not reachable. Start oMLX and ensure it's running at " + (process.env.OMLX_URL || "http://localhost:8000"),
+        needs_omlx: true,
+      }, { status: 503 });
+    }
   }
 
   // Step 4: Fire off analysis in background — don't await so the response
   // returns immediately and the client polls for state changes.
-  runAnalysis(id, transcript, duration);
+  runAnalysis(id, transcript, duration, userContext);
 
   return NextResponse.json({ started: true });
 }

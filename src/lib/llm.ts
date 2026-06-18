@@ -88,8 +88,11 @@ function parseTimestamp(ts: string): number {
   return 0;
 }
 
-function buildPrompt(chunk: string, videoDuration: number): string {
-  return `You are a viral content expert. Analyze this podcast transcript segment and identify the most engaging, shareable moments that would work as short-form clips (15-90 seconds each).
+function buildPrompt(chunk: string, videoDuration: number, userContext?: string): string {
+  const contextSection = userContext
+    ? `\nThe user has provided the following context about what they're looking for:\n${userContext}\n\nUse this to prioritise moments that match their intent.\n`
+    : "";
+  return `You are a viral content expert. Analyze this podcast transcript segment and identify the most engaging, shareable moments that would work as short-form clips (15-90 seconds each).${contextSection}
 
 Each line is prefixed with [Xs] where X is the exact timestamp in seconds from the start of the video. Use these values directly as start_time and end_time — do not convert or estimate.
 
@@ -120,13 +123,13 @@ function parseHighlights(content: string): HighlightSegment[] {
   }
 }
 
-async function analyzeChunkLocal(chunk: string, videoDuration: number): Promise<HighlightSegment[]> {
+async function analyzeChunkLocal(chunk: string, videoDuration: number, userContext?: string): Promise<HighlightSegment[]> {
   const res = await fetch(`${OMLX_BASE_URL}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       model: OMLX_MODEL,
-      messages: [{ role: "user", content: buildPrompt(chunk, videoDuration) }],
+      messages: [{ role: "user", content: buildPrompt(chunk, videoDuration, userContext) }],
       temperature: 0.3,
       max_tokens: 2048,
     }),
@@ -141,32 +144,33 @@ async function analyzeChunkLocal(chunk: string, videoDuration: number): Promise<
   return parseHighlights(data.choices?.[0]?.message?.content ?? "[]");
 }
 
-async function analyzeChunkClaude(chunk: string, videoDuration: number): Promise<HighlightSegment[]> {
+async function analyzeChunkClaude(chunk: string, videoDuration: number, userContext?: string): Promise<HighlightSegment[]> {
   const apiKey = getSetting("claude_api_key") || process.env.ANTHROPIC_API_KEY || "";
-  if (!apiKey) throw new Error("Claude API key not set. Add it in Settings → Model Provider.");
+  if (!apiKey) throw new Error("Claude API key not set. Add it in Settings → AI Model.");
 
   const client = new Anthropic({ apiKey });
   const message = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 2048,
-    messages: [{ role: "user", content: buildPrompt(chunk, videoDuration) }],
+    messages: [{ role: "user", content: buildPrompt(chunk, videoDuration, userContext) }],
   });
 
   const content = message.content[0].type === "text" ? message.content[0].text : "[]";
   return parseHighlights(content);
 }
 
-async function analyzeChunk(chunk: string, videoDuration: number): Promise<HighlightSegment[]> {
+async function analyzeChunk(chunk: string, videoDuration: number, userContext?: string): Promise<HighlightSegment[]> {
   const provider = getSetting("model_provider") ?? "local";
   return provider === "claude"
-    ? analyzeChunkClaude(chunk, videoDuration)
-    : analyzeChunkLocal(chunk, videoDuration);
+    ? analyzeChunkClaude(chunk, videoDuration, userContext)
+    : analyzeChunkLocal(chunk, videoDuration, userContext);
 }
 
 export async function detectHighlights(
   transcript: string,
   videoDuration: number,
-  onProgress?: (message: string, progress: number) => void
+  onProgress?: (message: string, progress: number) => void,
+  userContext?: string
 ): Promise<HighlightSegment[]> {
   const compressed = compressTranscript(transcript);
 
@@ -183,7 +187,7 @@ export async function detectHighlights(
   for (let i = 0; i < chunks.length; i++) {
     onProgress?.(`Analyzing chunk ${i + 1} of ${chunks.length}…`, 50 + Math.round((i / chunks.length) * 20));
     try {
-      const result = await analyzeChunk(chunks[i], videoDuration);
+      const result = await analyzeChunk(chunks[i], videoDuration, userContext);
       perChunk.push(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
