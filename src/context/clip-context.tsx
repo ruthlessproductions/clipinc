@@ -150,10 +150,48 @@ export function ClipProvider({ children }: { children: ReactNode }) {
     []
   );
 
-  const deleteClips = useCallback(async (ids: string[]) => {
-    setClips((prev) => prev.filter((c) => !ids.includes(c.id)));
-    await Promise.all(ids.map((id) => fetch(`/api/clips/${id}`, { method: "DELETE" })));
+  // Schedules a delete that can be undone within UNDO_WINDOW_MS. The item is
+  // removed from local state immediately; the API call only fires once the
+  // window elapses without the user clicking Undo.
+  const scheduleDelete = useCallback(
+    (message: string, undo: () => void, commit: () => Promise<void>) => {
+      const id = `${Date.now()}-${Math.random()}`;
+      undoersRef.current.set(id, undo);
+      setPendingDeletes((prev) => [...prev, { id, message, durationMs: UNDO_WINDOW_MS }]);
+      const timeoutId = setTimeout(() => {
+        timersRef.current.delete(id);
+        undoersRef.current.delete(id);
+        setPendingDeletes((prev) => prev.filter((p) => p.id !== id));
+        commit().catch(() => {});
+      }, UNDO_WINDOW_MS);
+      timersRef.current.set(id, timeoutId);
+    },
+    []
+  );
+
+  const undoPendingDelete = useCallback((id: string) => {
+    const timeoutId = timersRef.current.get(id);
+    if (timeoutId) clearTimeout(timeoutId);
+    timersRef.current.delete(id);
+    const undo = undoersRef.current.get(id);
+    undoersRef.current.delete(id);
+    undo?.();
+    setPendingDeletes((prev) => prev.filter((p) => p.id !== id));
   }, []);
+
+  const deleteClips = useCallback(async (ids: string[]) => {
+    setClips((prevClips) => {
+      const removed = prevClips.filter((c) => ids.includes(c.id));
+      scheduleDelete(
+        `${removed.length} ${removed.length === 1 ? "clip" : "clips"} deleted`,
+        () => setClips((prev) => [...prev, ...removed]),
+        async () => {
+          await Promise.all(ids.map((id) => fetch(`/api/clips/${id}`, { method: "DELETE" })));
+        }
+      );
+      return prevClips.filter((c) => !ids.includes(c.id));
+    });
+  }, [scheduleDelete]);
 
   const deleteProjects = useCallback(async (ids: string[]) => {
     setProjects((prev) => prev.filter((p) => !ids.includes(p.id)));
