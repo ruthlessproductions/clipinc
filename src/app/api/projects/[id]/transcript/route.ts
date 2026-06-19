@@ -3,6 +3,22 @@ import fs from "fs";
 import { getProject, updateProject } from "@/lib/db";
 import { transcriptPath, saveUploadedFile } from "@/lib/storage";
 
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const project = getProject(id);
+  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  let transcript = project.transcript as string | null;
+  if (!transcript) {
+    const tPath = transcriptPath(id);
+    if (fs.existsSync(tPath)) transcript = fs.readFileSync(tPath, "utf-8");
+  }
+  return NextResponse.json({ transcript: transcript ?? null });
+}
+
 
 export async function POST(
   req: Request,

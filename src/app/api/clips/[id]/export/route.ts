@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import fs from "fs";
 import { getClip, getProject, updateClip, getCaptions } from "@/lib/db";
 import { extractClip, generateThumbnail } from "@/lib/ffmpeg";
-import { generateASSContent, writeTempASS } from "@/lib/captions";
+import { generateASSContent } from "@/lib/captions";
+import os from "os";
+import path from "path";
 import type { AspectRatio } from "@/lib/types";
 
 export async function POST(
@@ -33,6 +35,25 @@ export async function POST(
   const body = await req.json().catch(() => ({}));
   const aspectRatio = (body.aspect_ratio || clip.aspect_ratio || "9:16") as AspectRatio;
   const captionStyle: string | null = body.caption_style ?? null;
+  const captionFont: string | undefined = body.caption_font || undefined;
+  // caption_position is 0-100 % from bottom; convert to ASS MarginV pixels (PlayResY = 1920)
+  const captionPosition: number | null = body.caption_position != null ? Number(body.caption_position) : null;
+  const marginVOverride = captionPosition != null ? Math.round((captionPosition / 100) * 1920) : undefined;
+
+  // If the clip has no valid time range (LLM output was 0), derive from captions
+  let clipStart = clip.start_time as number;
+  let clipEnd = clip.end_time as number;
+  if (clipEnd <= clipStart) {
+    const allCaptions = getCaptions(id) as { start_time: number; end_time: number }[];
+    if (allCaptions.length > 0) {
+      clipStart = allCaptions[0].start_time;
+      clipEnd = allCaptions[allCaptions.length - 1].end_time;
+      updateClip(id, { start_time: clipStart, end_time: clipEnd, duration: clipEnd - clipStart });
+    }
+  }
+  if (clipEnd <= clipStart) {
+    return NextResponse.json({ error: "Clip has no valid time range" }, { status: 422 });
+  }
 
   // Build ASS subtitle file if a caption style was requested
   let assPath: string | undefined;
@@ -45,8 +66,11 @@ export async function POST(
         startTime: c.start_time,
         endTime: c.end_time,
       }));
-      const assContent = generateASSContent(captions, clip.start_time as number, captionStyle);
-      if (assContent) assPath = writeTempASS(assContent);
+      const assContent = generateASSContent(captions, clipStart, captionStyle, marginVOverride, captionFont);
+      if (assContent) {
+        assPath = path.join(os.tmpdir(), `clipinc-${Date.now()}.ass`);
+        fs.writeFileSync(assPath, assContent, "utf8");
+      }
     }
   }
 
@@ -54,8 +78,8 @@ export async function POST(
     const clipFilePath = await extractClip(
       project.file_path as string,
       id,
-      clip.start_time as number,
-      clip.end_time as number,
+      clipStart,
+      clipEnd,
       aspectRatio,
       assPath
     );
@@ -63,7 +87,7 @@ export async function POST(
     await generateThumbnail(
       project.file_path as string,
       id,
-      clip.start_time as number
+      clipStart
     );
 
     updateClip(id, {

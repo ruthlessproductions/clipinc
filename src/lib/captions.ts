@@ -1,7 +1,17 @@
-import fs from "fs";
-import os from "os";
-import path from "path";
 import type { Caption } from "./types";
+
+// ─── Font options ─────────────────────────────────────────────────────────────
+
+export const CAPTION_FONTS = [
+  { id: "Impact",        name: "Impact",     label: "Impact"   },
+  { id: "Arial",         name: "Arial",      label: "Arial"    },
+  { id: "Georgia",       name: "Georgia",    label: "Georgia"  },
+  { id: "Trebuchet MS",  name: "Trebuchet",  label: "Trebuchet" },
+] as const;
+
+export type CaptionFontId = (typeof CAPTION_FONTS)[number]["id"];
+
+export const DEFAULT_FONT: CaptionFontId = "Impact";
 
 // ─── Style presets ────────────────────────────────────────────────────────────
 // ASS colours use AABBGGRR byte order (opposite of CSS hex).
@@ -117,9 +127,12 @@ function toASSTime(seconds: number): string {
 export function generateASSContent(
   captions: Caption[],
   clipStartTime: number,
-  styleId: string
+  styleId: string,
+  marginVOverride?: number,
+  fontOverride?: string
 ): string {
   const style = getCaptionStyle(styleId);
+  const fontName = fontOverride ?? style.fontName;
 
   // Convert caption segments → word timings, relative to clip start
   const words: WordTiming[] = [];
@@ -140,7 +153,7 @@ export function generateASSContent(
 
   const styleRow = [
     "Default",
-    style.fontName,
+    fontName,
     style.fontSize,
     style.assPrimary,
     style.assSecondary,
@@ -158,7 +171,7 @@ export function generateASSContent(
     style.shadow,
     "2",   // alignment: centred bottom
     "60", "60", // marginL, marginR
-    style.marginV,
+    marginVOverride ?? style.marginV,
     "1",   // encoding
   ].join(",");
 
@@ -196,8 +209,3 @@ export function generateASSContent(
   return `${header}\n${events}\n`;
 }
 
-export function writeTempASS(content: string): string {
-  const tmpFile = path.join(os.tmpdir(), `clipinc-${Date.now()}.ass`);
-  fs.writeFileSync(tmpFile, content, "utf8");
-  return tmpFile;
-}

@@ -42,7 +42,14 @@ export async function PATCH(
   }
 
   if (captions) {
-    setCaptions(id, captions);
+    // Normalize camelCase from client to snake_case for DB
+    const normalized = captions.map((c: Record<string, unknown>) => ({
+      id: c.id as string,
+      text: c.text as string,
+      start_time: (c.start_time ?? c.startTime) as number,
+      end_time: (c.end_time ?? c.endTime) as number,
+    }));
+    setCaptions(id, normalized);
   }
 
   return NextResponse.json({ success: true });

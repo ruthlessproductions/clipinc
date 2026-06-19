@@ -170,6 +170,69 @@ export async function exchangeCode(
   return json;
 }
 
+export async function refreshAccessToken(
+  platform: SocialPlatform,
+  refreshToken: string
+): Promise<{ access_token: string; refresh_token?: string; expires_in?: number }> {
+  const config = platformConfigs[platform];
+  let clientId: string | undefined;
+  let clientSecret: string | undefined;
+  if (platform === "tiktok") {
+    ({ clientId, clientSecret } = getTikTokCredentials());
+  } else {
+    clientId = process.env[config.envClientId];
+    clientSecret = process.env[config.envClientSecret];
+    if (!clientId || !clientSecret) throw new Error(`Missing env vars for ${platform}`);
+  }
+
+  const body: Record<string, string> = {
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+  };
+  if (platform === "tiktok") {
+    body.client_key = clientId;
+    body.client_secret = clientSecret;
+  } else {
+    body.client_id = clientId;
+    body.client_secret = clientSecret;
+  }
+
+  const res = await fetch(config.tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Token refresh failed for ${platform}: ${text}`);
+  }
+
+  const json = await res.json();
+
+  if (platform === "tiktok") {
+    if (json.error && json.error !== "ok") {
+      throw new Error(`TikTok token refresh failed: ${json.error_description ?? json.error}`);
+    }
+    const tokenData = json.data ?? json;
+    if (!tokenData.access_token) {
+      throw new Error(`TikTok token refresh: no access_token in response: ${JSON.stringify(json)}`);
+    }
+    return {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token ?? refreshToken,
+      expires_in: tokenData.expires_in,
+    };
+  }
+
+  // Google does not return a new refresh_token on refresh — keep the existing one
+  return {
+    access_token: json.access_token,
+    refresh_token: json.refresh_token ?? refreshToken,
+    expires_in: json.expires_in,
+  };
+}
+
 // ─── Platform publish implementations ────────────────────────────────────────
 
 export interface PublishResult {
@@ -265,6 +328,12 @@ export async function publishToTikTok(
   const stat = fs.statSync(videoPath);
   const fileSize = stat.size;
 
+  // TikTok requires each chunk to be 5MB–64MB, except a single chunk covering
+  // the whole file when video_size itself is under 64MB.
+  const MAX_CHUNK = 64 * 1024 * 1024;
+  const chunkSize = fileSize <= MAX_CHUNK ? fileSize : MAX_CHUNK;
+  const totalChunkCount = Math.ceil(fileSize / chunkSize);
+
   // 1. Initialise the upload — use inbox/draft endpoint so it works in sandbox
   //    and before Content Posting API is fully approved for production.
   //    The video lands in the creator's TikTok inbox as a draft to review & post.
@@ -280,8 +349,8 @@ export async function publishToTikTok(
         source_info: {
           source: "FILE_UPLOAD",
           video_size: fileSize,
-          chunk_size: fileSize, // single chunk (≤64 MB clips)
-          total_chunk_count: 1,
+          chunk_size: chunkSize,
+          total_chunk_count: totalChunkCount,
         },
       }),
     }
@@ -295,20 +364,32 @@ export async function publishToTikTok(
 
   const { upload_url, publish_id } = initData.data as { upload_url: string; publish_id: string };
 
-  // 2. Upload the video
-  const videoBuffer = fs.readFileSync(videoPath);
-  const uploadRes = await fetch(upload_url, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "video/mp4",
-      "Content-Length": String(fileSize),
-      "Content-Range": `bytes 0-${fileSize - 1}/${fileSize}`,
-    },
-    body: videoBuffer,
-  });
+  // 2. Upload the video in chunks
+  const fd = fs.openSync(videoPath, "r");
+  try {
+    for (let i = 0; i < totalChunkCount; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, fileSize) - 1;
+      const length = end - start + 1;
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
 
-  if (!uploadRes.ok) {
-    throw new Error(`TikTok upload failed (${uploadRes.status}): ${await uploadRes.text()}`);
+      const uploadRes = await fetch(upload_url, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "video/mp4",
+          "Content-Length": String(length),
+          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+        },
+        body: buffer,
+      });
+
+      if (!uploadRes.ok) {
+        throw new Error(`TikTok upload chunk ${i} failed (${uploadRes.status}): ${await uploadRes.text()}`);
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
   }
 
   return { id: publish_id };

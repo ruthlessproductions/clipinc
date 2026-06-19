@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { getClip, getProject, getSocialAccount, updateClip } from "@/lib/db";
+import { getClip, getProject, getSocialAccount, updateClip, updateSocialAccount } from "@/lib/db";
 import type { SocialPlatform } from "@/lib/types";
 import {
   publishToYouTube,
   publishToTikTok,
   publishToInstagram,
   publishToTwitter,
+  refreshAccessToken,
 } from "@/lib/social/platforms";
 
 export async function POST(req: Request) {
@@ -46,7 +47,41 @@ export async function POST(req: Request) {
       continue;
     }
 
-    const accessToken = account.access_token as string;
+    let accessToken = account.access_token as string;
+    const expiresAt = account.expires_at as string | undefined;
+    const refreshToken = account.refresh_token as string | undefined;
+
+    // Refresh the access token if it's expired (or about to expire)
+    if (expiresAt && new Date(expiresAt).getTime() <= Date.now() + 60_000) {
+      if (!refreshToken) {
+        results[platform] = {
+          success: false,
+          error: `${platform} access token expired and no refresh token is stored. Reconnect in Settings.`,
+        };
+        continue;
+      }
+      try {
+        const refreshed = await refreshAccessToken(platform, refreshToken);
+        accessToken = refreshed.access_token;
+        const newExpiresAt = refreshed.expires_in
+          ? new Date(Date.now() + refreshed.expires_in * 1000).toISOString()
+          : undefined;
+        updateSocialAccount(platform, {
+          connected: 1,
+          username: account.username as string,
+          access_token: accessToken,
+          refresh_token: refreshed.refresh_token ?? refreshToken,
+          expires_at: newExpiresAt,
+        });
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        results[platform] = {
+          success: false,
+          error: `${platform} token refresh failed: ${message}. Reconnect in Settings.`,
+        };
+        continue;
+      }
+    }
 
     try {
       let result;

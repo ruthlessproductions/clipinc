@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -18,6 +19,9 @@ import {
   mockProjects,
   mockSocialAccounts,
 } from "@/lib/mock-data";
+import { UndoToastStack, type PendingDelete } from "@/components/ui/undo-toast";
+
+const UNDO_WINDOW_MS = 8000;
 
 interface ClipContextType {
   projects: Project[];
@@ -35,6 +39,7 @@ interface ClipContextType {
   getProject: (id: string) => Project | undefined;
   updateClip: (id: string, updates: Partial<Clip>) => void;
   deleteClips: (ids: string[]) => Promise<void>;
+  deleteProjects: (ids: string[]) => Promise<void>;
   toggleSocialAccount: (platform: string) => void;
 }
 
@@ -46,6 +51,9 @@ export function ClipProvider({ children }: { children: ReactNode }) {
   const [socialAccounts, setSocialAccounts] =
     useState<SocialAccount[]>(mockSocialAccounts);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
+  const [pendingDeletes, setPendingDeletes] = useState<PendingDelete[]>([]);
+  const undoersRef = useRef<Map<string, () => void>>(new Map());
+  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -147,6 +155,12 @@ export function ClipProvider({ children }: { children: ReactNode }) {
     await Promise.all(ids.map((id) => fetch(`/api/clips/${id}`, { method: "DELETE" })));
   }, []);
 
+  const deleteProjects = useCallback(async (ids: string[]) => {
+    setProjects((prev) => prev.filter((p) => !ids.includes(p.id)));
+    setClips((prev) => prev.filter((c) => !ids.includes(c.projectId)));
+    await Promise.all(ids.map((id) => fetch(`/api/projects/${id}`, { method: "DELETE" })));
+  }, []);
+
   const toggleSocialAccount = useCallback((platform: string) => {
     setSocialAccounts((prev) =>
       prev.map((a) =>
@@ -179,6 +193,7 @@ export function ClipProvider({ children }: { children: ReactNode }) {
         getProject,
         updateClip,
         deleteClips,
+        deleteProjects,
         toggleSocialAccount,
       }}
     >

@@ -5,8 +5,8 @@ import { useClipContext } from "@/context/clip-context";
 import { ClipCard } from "@/components/library/clip-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import type { ClipStatus } from "@/lib/types";
-import { Search, Film, CheckSquare, Trash2, X } from "lucide-react";
+import type { Clip, ClipStatus } from "@/lib/types";
+import { Search, Film, CheckSquare, Trash2, X, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const filters: { label: string; value: ClipStatus | "all" }[] = [
@@ -17,7 +17,7 @@ const filters: { label: string; value: ClipStatus | "all" }[] = [
 ];
 
 export default function LibraryPage() {
-  const { clips, deleteClips } = useClipContext();
+  const { clips, projects, deleteClips, deleteProjects } = useClipContext();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ClipStatus | "all">("all");
   const [selecting, setSelecting] = useState(false);
@@ -35,10 +35,45 @@ export default function LibraryPage() {
     return result;
   }, [clips, filter, search]);
 
+  const groups = useMemo(() => {
+    const byProject = new Map<string, typeof filtered>();
+    for (const clip of filtered) {
+      const list = byProject.get(clip.projectId);
+      if (list) list.push(clip);
+      else byProject.set(clip.projectId, [clip]);
+    }
+    return [...byProject.entries()]
+      .map(([projectId, projectClips]) => ({
+        project: projects.find((p) => p.id === projectId),
+        projectId,
+        clips: projectClips,
+      }))
+      .sort((a, b) => (a.project?.title ?? "").localeCompare(b.project?.title ?? ""));
+  }, [filtered, projects]);
+
+  // Only safe to delete a whole project (not just the visible clips) when no
+  // filter/search is hiding any of that project's clips from the group.
+  const canDeleteWholeProject = filter === "all" && !search.trim();
+
+  const isProjectSelected = (projectClips: Clip[]) =>
+    projectClips.length > 0 && projectClips.every((c) => selected.has(c.id));
+
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleProjectSelect = (projectClips: Clip[]) => {
+    const allSelected = isProjectSelected(projectClips);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const c of projectClips) {
+        if (allSelected) next.delete(c.id);
+        else next.add(c.id);
+      }
       return next;
     });
   };
@@ -52,7 +87,21 @@ export default function LibraryPage() {
   };
 
   const handleDelete = async () => {
-    await deleteClips([...selected]);
+    const projectIdsToDelete: string[] = [];
+    const clipIdsToDelete: string[] = [];
+    for (const { projectId, clips: projectClips } of groups) {
+      if (canDeleteWholeProject && isProjectSelected(projectClips)) {
+        projectIdsToDelete.push(projectId);
+      } else {
+        for (const c of projectClips) {
+          if (selected.has(c.id)) clipIdsToDelete.push(c.id);
+        }
+      }
+    }
+    await Promise.all([
+      projectIdsToDelete.length > 0 ? deleteProjects(projectIdsToDelete) : Promise.resolve(),
+      clipIdsToDelete.length > 0 ? deleteClips(clipIdsToDelete) : Promise.resolve(),
+    ]);
     setSelected(new Set());
     setSelecting(false);
   };
@@ -137,15 +186,39 @@ export default function LibraryPage() {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {filtered.map((clip) => (
-            <ClipCard
-              key={clip.id}
-              clip={clip}
-              selecting={selecting}
-              selected={selected.has(clip.id)}
-              onToggle={toggleSelect}
-            />
+        <div className="space-y-10">
+          {groups.map(({ projectId, project, clips: projectClips }) => (
+            <div key={projectId} className="space-y-4">
+              <div className="flex items-center gap-3">
+                {selecting && (
+                  <button
+                    onClick={() => toggleProjectSelect(projectClips)}
+                    title={canDeleteWholeProject ? "Select entire project" : "Select visible clips in this project"}
+                    className="flex h-5 w-5 items-center justify-center rounded border border-surface-400 transition-colors cursor-pointer data-[checked=true]:bg-brand-600 data-[checked=true]:border-brand-600"
+                    data-checked={isProjectSelected(projectClips)}
+                  >
+                    {isProjectSelected(projectClips) && <Check className="h-3.5 w-3.5 text-white" />}
+                  </button>
+                )}
+                <h2 className="text-sm font-semibold text-surface-700">
+                  {project?.title ?? "Unknown project"}
+                </h2>
+                <Badge className="text-xs">
+                  {projectClips.length} {projectClips.length === 1 ? "clip" : "clips"}
+                </Badge>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {projectClips.map((clip) => (
+                  <ClipCard
+                    key={clip.id}
+                    clip={clip}
+                    selecting={selecting}
+                    selected={selected.has(clip.id)}
+                    onToggle={toggleSelect}
+                  />
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
